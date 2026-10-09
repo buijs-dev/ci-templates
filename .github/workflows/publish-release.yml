@@ -22,6 +22,8 @@ jobs:
     permissions:
       contents: write
       packages: write
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
     defaults:
       run:
         working-directory: ${{ inputs.root-dir }}
@@ -58,9 +60,6 @@ jobs:
 
       - name: Publish to GitHub Packages
         run: ./gradlew publishAllPublicationsToGitHubPackagesRepository -Pversion=${{ steps.tag.outputs.version }} --stacktrace
-        env:
-          GITHUB_ACTOR: ${{ github.actor }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create GitHub Release
         run: gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes --verify-tag

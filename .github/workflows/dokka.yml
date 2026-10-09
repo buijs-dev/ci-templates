@@ -20,6 +20,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      packages: read
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
     defaults:
       run:
         working-directory: ${{ inputs.root-dir }}

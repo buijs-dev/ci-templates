@@ -110,6 +110,7 @@ on:
 
 permissions:
   contents: read
+  packages: read
   pages: write
   id-token: write
 
@@ -200,19 +201,27 @@ and release a new version, or delete the package version in GitHub before re-run
 
 ### Consuming releases
 
-Reading from GitHub Packages requires authentication, also for public packages.
-Use a personal access token with the `read:packages` scope:
+Reading from GitHub Packages requires authentication, also for public packages. 
+Add this repository to `pluginManagement` and build.gradle(.kts) `repositories`:
 
 ```kotlin
-repositories {
-    maven {
-        url = uri("https://maven.pkg.github.com/buijs-dev/<repository>")
-        credentials {
-            username = providers.gradleProperty("gpr.user").orNull ?: System.getenv("GITHUB_ACTOR")
-            password = providers.gradleProperty("gpr.key").orNull ?: System.getenv("GITHUB_TOKEN")
-        }
+maven("https://maven.pkg.github.com/buijs-dev/*") {
+    credentials {
+        username = providers.gradleProperty("gpr.user").orElse(providers.environmentVariable("GITHUB_ACTOR")).orNull
+        password = providers.gradleProperty("gpr.key").orElse(providers.environmentVariable("GITHUB_TOKEN")).orNull
+    }
+    mavenContent {
+        releasesOnly()
+        includeGroupByRegex("dev\\.buijs.*")
     }
 }
 ```
 
-Put `gpr.user` and `gpr.key` in `~/.gradle/gradle.properties`, never in the repository.
+- **CI**: the templates pass `GITHUB_TOKEN` to Gradle and request `packages: read`; `GITHUB_ACTOR` is set by the
+  runner. A caller that declares its own `permissions` (like Dokka) must include `packages: read`.
+- **Locally**: create a classic personal access token with the `read:packages` scope and add it to
+  `~/.gradle/gradle.properties` (never to the repository):
+  ```properties
+  gpr.user=<github username>
+  gpr.key=<token>
+  ```
