@@ -44,6 +44,5 @@ jobs:
       - name: Publish to Repsy
         run: ./gradlew publishAllPublicationsToRepsyRepository --stacktrace
         env:
-          REPSY_URL: ${{ vars.REPSY_URL }}
           REPSY_USERNAME: ${{ secrets.REPSY_USERNAME }}
           REPSY_PASSWORD: ${{ secrets.REPSY_PASSWORD }}

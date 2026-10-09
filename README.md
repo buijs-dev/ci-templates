@@ -25,13 +25,12 @@ with:
 
 ## Repository setup
 
-| Name             | Kind                | Needed for                                                             |
-|------------------|---------------------|------------------------------------------------------------------------|
-| `ROOT_DIR`       | variable (optional) | All workflows, defaults to `.`                                         |
-| `CODECOV_TOKEN`  | secret              | `coverage.yml`                                                         |
-| `REPSY_URL`      | variable            | `publish-snapshot.yml`, e.g. `https://repo.repsy.io/mvn/<user>/<repo>` |
-| `REPSY_USERNAME` | secret              | `publish-snapshot.yml`                                                 |
-| `REPSY_PASSWORD` | secret              | `publish-snapshot.yml`                                                 |
+| Name             | Kind                | Needed for                     |
+|------------------|---------------------|--------------------------------|
+| `ROOT_DIR`       | variable (optional) | All workflows, defaults to `.` |
+| `CODECOV_TOKEN`  | secret              | `coverage.yml`                 |
+| `REPSY_USERNAME` | secret              | `publish-snapshot.yml`         |
+| `REPSY_PASSWORD` | secret              | `publish-snapshot.yml`         |
 
 For `dokka.yml`, enable GitHub Pages with source **GitHub Actions** (Settings → Pages).
 `publish-release.yml` only uses the built-in `GITHUB_TOKEN`. The Gradle build must define 
@@ -49,16 +48,27 @@ publishing {
             }
         }
         
-        System.getenv("REPSY_URL")?.let { repsyUrl ->
-            maven {
-                name = "Repsy"
-                url = uri(repsyUrl)
-                credentials {
-                    username = System.getenv("REPSY_USERNAME")
-                    password = System.getenv("REPSY_PASSWORD")
-                }
+        maven {
+            name = "Repsy"
+            url = uri("https://repo.repsy.io/mvn/buijs-dev/maven")
+            credentials {
+                username = System.getenv("REPSY_USERNAME")
+                password = System.getenv("REPSY_PASSWORD")
             }
         }
+    }
+}
+```
+
+All snapshots go to one public Repsy repository (`https://repo.repsy.io/mvn/buijs-dev/maven`,
+web UI: https://repsy.io/buijs-dev/maven). Reading needs no credentials, so a repository that depends
+on another SNAPSHOT adds it to `pluginManagement` and build.gradle(.kts) repositories:
+
+```kotlin
+maven("https://repo.repsy.io/mvn/buijs-dev/maven") {
+    mavenContent {
+        snapshotsOnly()
+        includeGroupByRegex("dev\\.buijs.*")
     }
 }
 ```
