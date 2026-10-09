@@ -1,0 +1,42 @@
+name: Setup Java & Gradle
+description: Installs the JDK listed in .sdkmanrc and configures Gradle for the wrapper in the root dir.
+
+inputs:
+  root-dir:
+    description: Directory containing .sdkmanrc and the Gradle wrapper.
+    required: false
+    default: .
+
+runs:
+  using: composite
+  steps:
+    - name: Read Java version from .sdkmanrc
+      id: sdkman
+      shell: bash
+      working-directory: ${{ inputs.root-dir }}
+      run: |
+        if [ ! -f .sdkmanrc ]; then
+          echo "::error::No .sdkmanrc found in '${{ inputs.root-dir }}'"
+          exit 1
+        fi
+        version=$(sed -n 's/^java=//p' .sdkmanrc | tr -d '[:space:]')
+        version=${version%-*}
+        if [ -z "$version" ]; then
+          echo "::error::No java= entry found in .sdkmanrc"
+          exit 1
+        fi
+        echo "java-version=$version" >> "$GITHUB_OUTPUT"
+
+    - name: Set up JDK
+      uses: actions/setup-java@v5
+      with:
+        distribution: temurin
+        java-version: ${{ steps.sdkman.outputs.java-version }}
+
+    - name: Set up Gradle
+      uses: gradle/actions/setup-gradle@v5
+
+    - name: Make Gradle wrapper executable
+      shell: bash
+      working-directory: ${{ inputs.root-dir }}
+      run: chmod +x gradlew

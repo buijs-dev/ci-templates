@@ -1,0 +1,49 @@
+name: Publish Snapshot
+
+# Publishes the SNAPSHOT version from gradle.properties to Repsy.
+on:
+  workflow_call:
+    inputs:
+      root-dir:
+        description: Directory containing .sdkmanrc and the Gradle wrapper.
+        type: string
+        required: false
+        default: .
+    secrets:
+      REPSY_USERNAME:
+        required: true
+      REPSY_PASSWORD:
+        required: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: ${{ inputs.root-dir }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Verify SNAPSHOT version
+        run: |
+          version=$(sed -n 's/^version=//p' gradle.properties | tr -d '[:space:]')
+          if [[ "$version" != *-SNAPSHOT ]]; then
+            echo "::error::version in gradle.properties must end with -SNAPSHOT (found '$version')"
+            exit 1
+          fi
+          echo "Publishing $version"
+
+      - name: Set up Java & Gradle
+        uses: buijs-dev/ci-templates/.github/actions/setup-java@main
+        with:
+          root-dir: ${{ inputs.root-dir }}
+
+      - name: Publish to Repsy
+        run: ./gradlew publishAllPublicationsToRepsyRepository --stacktrace
+        env:
+          REPSY_URL: ${{ vars.REPSY_URL }}
+          REPSY_USERNAME: ${{ secrets.REPSY_USERNAME }}
+          REPSY_PASSWORD: ${{ secrets.REPSY_PASSWORD }}

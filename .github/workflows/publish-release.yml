@@ -1,0 +1,68 @@
+name: Publish Release
+
+# Publishes a release to GitHub Packages with a v* tag on the main branch.
+# The version is taken from the tag: v1.2.3 publishes 1.2.3.
+on:
+  workflow_call:
+    inputs:
+      root-dir:
+        description: Directory containing .sdkmanrc and the Gradle wrapper.
+        type: string
+        required: false
+        default: .
+      release-branch:
+        description: Branch the tagged commit must be on.
+        type: string
+        required: false
+        default: main
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    defaults:
+      run:
+        working-directory: ${{ inputs.root-dir }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Verify release tag
+        id: tag
+        env:
+          RELEASE_BRANCH: ${{ inputs.release-branch }}
+        run: |
+          if [[ "$GITHUB_REF_TYPE" != "tag" || "$GITHUB_REF_NAME" != v* ]]; then
+            echo "::error::Releases must be triggered by a v* tag (got $GITHUB_REF_TYPE '$GITHUB_REF_NAME')"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" "origin/$RELEASE_BRANCH"; then
+            echo "::error::Tag $GITHUB_REF_NAME is not on $RELEASE_BRANCH"
+            exit 1
+          fi
+          version=${GITHUB_REF_NAME#v}
+          if [[ "$version" == *-SNAPSHOT ]]; then
+            echo "::error::Release version must not be a SNAPSHOT ($version)"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Java & Gradle
+        uses: buijs-dev/ci-templates/.github/actions/setup-java@main
+        with:
+          root-dir: ${{ inputs.root-dir }}
+
+      - name: Publish to GitHub Packages
+        run: ./gradlew publishAllPublicationsToGitHubPackagesRepository -Pversion=${{ steps.tag.outputs.version }} --stacktrace
+        env:
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create GitHub Release
+        run: gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes --verify-tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

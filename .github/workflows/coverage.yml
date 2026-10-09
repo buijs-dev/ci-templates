@@ -1,0 +1,38 @@
+name: Coverage
+
+on:
+  workflow_call:
+    inputs:
+      root-dir:
+        description: Directory containing .sdkmanrc and the Gradle wrapper.
+        type: string
+        required: false
+        default: .
+    secrets:
+      CODECOV_TOKEN:
+        required: true
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.root-dir }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Java & Gradle
+        uses: buijs-dev/ci-templates/.github/actions/setup-java@main
+        with:
+          root-dir: ${{ inputs.root-dir }}
+
+      - name: Test & generate coverage report
+        run: ./gradlew check koverXmlReport --stacktrace
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ${{ inputs.root-dir }}/build/reports/kover/report.xml
+          fail_ci_if_error: true

@@ -1,0 +1,55 @@
+name: Dokka
+
+# The caller must grant `pages: write` and `id-token: write`.
+on:
+  workflow_call:
+    inputs:
+      root-dir:
+        description: Directory containing .sdkmanrc and the Gradle wrapper.
+        type: string
+        required: false
+        default: .
+      dokka-dir:
+        description: Dokka HTML output directory, relative to root-dir.
+        type: string
+        required: false
+        default: build/dokka/html
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: ${{ inputs.root-dir }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Java & Gradle
+        uses: buijs-dev/ci-templates/.github/actions/setup-java@main
+        with:
+          root-dir: ${{ inputs.root-dir }}
+
+      - name: Generate Dokka
+        run: ./gradlew dokkaGenerate --stacktrace
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: ${{ inputs.root-dir }}/${{ inputs.dokka-dir }}
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

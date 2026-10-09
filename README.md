@@ -1,0 +1,208 @@
+# CI Templates
+[![](https://img.shields.io/badge/Buijs-Software-blue)](https://buijs.dev/)
+[![GitHub](https://img.shields.io/github/license/buijs-dev/ci-templates?color=black)](https://github.com/buijs-dev/ci-templates/blob/main/LICENSE)
+
+Shared GitHub Actions.
+
+## Contents
+
+| Path                                     | Type              | Purpose                                                                   |
+|------------------------------------------|-------------------|---------------------------------------------------------------------------|
+| `.github/actions/setup-java`             | composite action  | Installs the JDK from `<root-dir>/.sdkmanrc` (temurin) and sets up Gradle |
+| `.github/workflows/coverage.yml`         | reusable workflow | `./gradlew check koverXmlReport` and upload to Codecov                    |
+| `.github/workflows/dokka.yml`            | reusable workflow | `./gradlew dokkaGenerate` and deploy to GitHub Pages                      |
+| `.github/workflows/publish-snapshot.yml` | reusable workflow | Publish the `-SNAPSHOT` version to Repsy                                  |
+| `.github/workflows/publish-release.yml`  | reusable workflow | Publish a tagged release to GitHub Packages and create a GitHub Release   |
+
+Every workflow accepts a `root-dir` input (default `.`). This is the directory that contains
+`.sdkmanrc`, `gradle.properties` and the Gradle wrapper; all Gradle commands run as `./gradlew` from there.
+Callers pass it through the `ROOT_DIR` repository variable so it can be changed without editing workflows:
+
+```yaml
+with:
+  root-dir: ${{ vars.ROOT_DIR || '.' }}
+```
+
+## Repository setup
+
+| Name             | Kind                | Needed for                                                             |
+|------------------|---------------------|------------------------------------------------------------------------|
+| `ROOT_DIR`       | variable (optional) | All workflows, defaults to `.`                                         |
+| `CODECOV_TOKEN`  | secret              | `coverage.yml`                                                         |
+| `REPSY_URL`      | variable            | `publish-snapshot.yml`, e.g. `https://repo.repsy.io/mvn/<user>/<repo>` |
+| `REPSY_USERNAME` | secret              | `publish-snapshot.yml`                                                 |
+| `REPSY_PASSWORD` | secret              | `publish-snapshot.yml`                                                 |
+
+For `dokka.yml`, enable GitHub Pages with source **GitHub Actions** (Settings → Pages).
+`publish-release.yml` only uses the built-in `GITHUB_TOKEN`. The Gradle build must define 
+two maven repositories named `Repsy` and `GitHubPackages`:
+
+```kotlin
+publishing {
+    repositories {
+        maven {
+            name = "GitHubPackages"
+            url = uri("https://maven.pkg.github.com/buijs-dev/<repository>")
+            credentials {
+                username = System.getenv("GITHUB_ACTOR")
+                password = System.getenv("GITHUB_TOKEN")
+            }
+        }
+        
+        System.getenv("REPSY_URL")?.let { repsyUrl ->
+            maven {
+                name = "Repsy"
+                url = uri(repsyUrl)
+                credentials {
+                    username = System.getenv("REPSY_USERNAME")
+                    password = System.getenv("REPSY_PASSWORD")
+                }
+            }
+        }
+    }
+}
+```
+
+## Usage
+
+Add the callers below to `.github/workflows/` of a repository.
+
+### Coverage
+
+```yaml
+name: Coverage
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  coverage:
+    uses: buijs-dev/ci-templates/.github/workflows/coverage.yml@main
+    with:
+      root-dir: ${{ vars.ROOT_DIR || '.' }}
+    secrets: inherit
+```
+
+### Dokka
+
+A reusable workflow cannot grant itself more permissions than the caller has, so the caller declares them.
+
+```yaml
+name: Dokka
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  dokka:
+    uses: buijs-dev/ci-templates/.github/workflows/dokka.yml@main
+    with:
+      root-dir: ${{ vars.ROOT_DIR || '.' }}
+```
+
+### Publish snapshot
+
+```yaml
+name: Publish Snapshot
+
+on:
+  push:
+    branches: [ develop ]
+  workflow_dispatch:
+
+jobs:
+  publish:
+    uses: buijs-dev/ci-templates/.github/workflows/publish-snapshot.yml@main
+    with:
+      root-dir: ${{ vars.ROOT_DIR || '.' }}
+    secrets: inherit
+```
+
+### Publish release
+
+```yaml
+name: Publish Release
+
+on:
+  push:
+    tags: [ 'v*' ]
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  publish:
+    uses: buijs-dev/ci-templates/.github/workflows/publish-release.yml@main
+    with:
+      root-dir: ${{ vars.ROOT_DIR || '.' }}
+```
+
+## Publishing
+
+Branch strategy:
+
+```
+feature/* ──PR──▶ develop ──PR──▶ main ──tag vX.Y.Z──▶ GitHub Packages
+                     │
+                     └─ every push: X.Y.Z-SNAPSHOT ─▶ Repsy
+```
+
+### Snapshots
+
+Every push to `develop` publishes the version from `gradle.properties` to Repsy.
+That version must end with `-SNAPSHOT`, otherwise the workflow fails.
+
+### Releases
+
+1. Merge `feature/*` into `develop` through a pull request.
+2. When `develop` is ready to release, merge it into `main` through a pull request.
+3. Tag the merge commit on `main` and push the tag:
+   ```shell
+   git checkout main
+   git pull
+   git tag v1.2.0
+   git push origin v1.2.0
+   ```
+4. The release workflow then:
+   - checks that the tagged commit is on `main` (a tag anywhere else fails the build);
+   - publishes version `1.2.0` (the tag without `v`) to GitHub Packages with `-Pversion=1.2.0`,
+     regardless of the version in `gradle.properties`;
+   - creates a GitHub Release with generated release notes.
+5. Bump `version` in `gradle.properties` on `develop` to the next snapshot, e.g. `1.3.0-SNAPSHOT`.
+
+A published version cannot be overwritten in GitHub Packages. To redo a failed release, fix the problem
+and release a new version, or delete the package version in GitHub before re-running the workflow.
+
+### Consuming releases
+
+Reading from GitHub Packages requires authentication, also for public packages.
+Use a personal access token with the `read:packages` scope:
+
+```kotlin
+repositories {
+    maven {
+        url = uri("https://maven.pkg.github.com/buijs-dev/<repository>")
+        credentials {
+            username = providers.gradleProperty("gpr.user").orNull ?: System.getenv("GITHUB_ACTOR")
+            password = providers.gradleProperty("gpr.key").orNull ?: System.getenv("GITHUB_TOKEN")
+        }
+    }
+}
+```
+
+Put `gpr.user` and `gpr.key` in `~/.gradle/gradle.properties`, never in the repository.
