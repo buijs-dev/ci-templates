@@ -1,0 +1,35 @@
+name: Release changelog
+description: Moves the [Unreleased] section of the changelog to a section for the released version.
+
+inputs:
+  version:
+    description: The released version, e.g. 1.2.0.
+    required: true
+  tag:
+    description: The release tag, e.g. v1.2.0.
+    required: true
+  changelog:
+    description: Path of the changelog, relative to the repository root.
+    required: false
+    default: CHANGELOG.md
+
+outputs:
+  notes-file:
+    description: File with the content of the released section, for the release notes.
+    value: ${{ steps.changelog.outputs.notes-file }}
+
+runs:
+  using: composite
+  steps:
+    - name: Move [Unreleased] to the released version
+      id: changelog
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      env:
+        CHANGELOG: ${{ inputs.changelog }}
+        VERSION: ${{ inputs.version }}
+        TAG: ${{ inputs.tag }}
+      run: |
+        notes_file="$RUNNER_TEMP/release-notes.md"
+        python3 "$GITHUB_ACTION_PATH/release_changelog.py" "$CHANGELOG" "$VERSION" "$TAG" "$(date -u +%F)" "$notes_file"
+        echo "notes-file=$notes_file" >> "$GITHUB_OUTPUT"
