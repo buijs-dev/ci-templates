@@ -2,6 +2,8 @@ name: Publish Release
 
 # Publishes a release to GitHub Packages with a v* tag on the main branch.
 # The version is taken from the tag: v1.2.3 publishes 1.2.3.
+# The [Unreleased] section of the changelog becomes the release notes and is moved to
+# [1.2.3] - <date> through a pull request to the release and the develop branch.
 on:
   workflow_call:
     inputs:
@@ -15,6 +17,16 @@ on:
         type: string
         required: false
         default: main
+      develop-branch:
+        description: Branch that also receives the changelog pull request.
+        type: string
+        required: false
+        default: develop
+      changelog:
+        description: Path of the changelog, relative to the repository root.
+        type: string
+        required: false
+        default: CHANGELOG.md
 
 jobs:
   publish:
@@ -22,6 +34,7 @@ jobs:
     permissions:
       contents: write
       packages: write
+      pull-requests: write
     env:
       GITHUB_TOKEN: ${{ github.token }}
     defaults:
@@ -53,6 +66,14 @@ jobs:
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
+      - name: Prepare changelog
+        id: changelog
+        uses: buijs-dev/ci-templates/.github/actions/release-changelog@main
+        with:
+          version: ${{ steps.tag.outputs.version }}
+          tag: ${{ github.ref_name }}
+          changelog: ${{ inputs.changelog }}
+
       - name: Set up Java & Gradle
         uses: buijs-dev/ci-templates/.github/actions/setup-java@main
         with:
@@ -62,6 +83,28 @@ jobs:
         run: ./gradlew publishAllPublicationsToGitHubPackagesRepository -Pversion=${{ steps.tag.outputs.version }} --stacktrace
 
       - name: Create GitHub Release
-        run: gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes --verify-tag
+        run: gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file "$NOTES_FILE" --verify-tag
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NOTES_FILE: ${{ steps.changelog.outputs.notes-file }}
+
+      - name: Open changelog pull requests
+        working-directory: ${{ github.workspace }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CHANGELOG: ${{ inputs.changelog }}
+          RELEASE_BRANCH: ${{ inputs.release-branch }}
+          DEVELOP_BRANCH: ${{ inputs.develop-branch }}
+        run: |
+          branch="chore/changelog-$GITHUB_REF_NAME"
+          title="chore: changelog for $GITHUB_REF_NAME"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898898+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git add "$CHANGELOG"
+          git commit -m "$title"
+          git push origin "$branch"
+          for base in "$RELEASE_BRANCH" "$DEVELOP_BRANCH"; do
+            gh pr create --base "$base" --head "$branch" --title "$title" \
+              --body "Moves the [Unreleased] section of \`$CHANGELOG\` to the $GITHUB_REF_NAME release."
+          done

@@ -6,13 +6,14 @@ Shared GitHub Actions.
 
 ## Contents
 
-| Path                                     | Type              | Purpose                                                                   |
-|------------------------------------------|-------------------|---------------------------------------------------------------------------|
-| `.github/actions/setup-java`             | composite action  | Installs the JDK from `<root-dir>/.sdkmanrc` (temurin) and sets up Gradle |
-| `.github/workflows/coverage.yml`         | reusable workflow | `./gradlew check koverXmlReport` and upload to Codecov                    |
-| `.github/workflows/dokka.yml`            | reusable workflow | `./gradlew dokkaGenerate` and deploy to GitHub Pages                      |
-| `.github/workflows/publish-snapshot.yml` | reusable workflow | Publish the `-SNAPSHOT` version to Repsy                                  |
-| `.github/workflows/publish-release.yml`  | reusable workflow | Publish a tagged release to GitHub Packages and create a GitHub Release   |
+| Path                                     | Type              | Purpose                                                                                                   |
+|------------------------------------------|-------------------|-----------------------------------------------------------------------------------------------------------|
+| `.github/actions/setup-java`             | composite action  | Installs the JDK from `<root-dir>/.sdkmanrc` (temurin) and sets up Gradle                                 |
+| `.github/actions/release-changelog`      | composite action  | Moves `## [Unreleased]` of the changelog to `## [X.Y.Z] - <date>` and extracts the release notes          |
+| `.github/workflows/coverage.yml`         | reusable workflow | `./gradlew check koverXmlReport` and upload to Codecov                                                    |
+| `.github/workflows/dokka.yml`            | reusable workflow | `./gradlew dokkaGenerate` and deploy to GitHub Pages                                                      |
+| `.github/workflows/publish-snapshot.yml` | reusable workflow | Publish the `-SNAPSHOT` version to Repsy                                                                  |
+| `.github/workflows/publish-release.yml`  | reusable workflow | Publish a tagged release to GitHub Packages, create a GitHub Release and open the changelog pull requests |
 
 Every workflow accepts a `root-dir` input (default `.`). This is the directory that contains
 `.sdkmanrc`, `gradle.properties` and the Gradle wrapper; all Gradle commands run as `./gradlew` from there.
@@ -33,7 +34,9 @@ with:
 | `REPSY_PASSWORD` | secret              | `publish-snapshot.yml`         |
 
 For `dokka.yml`, enable GitHub Pages with source **GitHub Actions** (Settings → Pages).
-`publish-release.yml` only uses the built-in `GITHUB_TOKEN`. The Gradle build must define 
+`publish-release.yml` only uses the built-in `GITHUB_TOKEN`. It needs a `CHANGELOG.md` in the repository root
+in [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format with a non-empty `## [Unreleased]` section,
+and **Allow GitHub Actions to create and approve pull requests** enabled (Settings → Actions → General). The Gradle build must define 
 two maven repositories named `Repsy` and `GitHubPackages`:
 
 ```kotlin
@@ -155,6 +158,7 @@ on:
 permissions:
   contents: write
   packages: write
+  pull-requests: write
 
 jobs:
   publish:
@@ -191,10 +195,18 @@ That version must end with `-SNAPSHOT`, otherwise the workflow fails.
    ```
 4. The release workflow then:
    - checks that the tagged commit is on `main` (a tag anywhere else fails the build);
+   - checks the changelog: a missing `CHANGELOG.md`, a missing or empty `## [Unreleased]` section, or an existing
+     `## [1.2.0]` section fails the build before anything is published;
    - publishes version `1.2.0` (the tag without `v`) to GitHub Packages with `-Pversion=1.2.0`,
      regardless of the version in `gradle.properties`;
-   - creates a GitHub Release with generated release notes.
-5. Bump `version` in `gradle.properties` on `develop` to the next snapshot, e.g. `1.3.0-SNAPSHOT`.
+   - creates a GitHub Release with the `## [Unreleased]` section as release notes;
+   - renames `## [Unreleased]` to `## [1.2.0] - <date>` (UTC) below a new, empty `## [Unreleased]`, and moves an
+     `[Unreleased]: .../compare/v1.1.0...HEAD` link, if present, to the new tag;
+   - pushes that change to `chore/changelog-v1.2.0` and opens a pull request to `main` and one to `develop`.
+5. Merge both changelog pull requests. Pull requests opened with `GITHUB_TOKEN` don't trigger other workflows,
+   so required status checks on `main` or `develop` won't run for them. When `develop` already has new
+   `## [Unreleased]` entries, resolve the conflict in its pull request.
+6. Bump `version` in `gradle.properties` on `develop` to the next snapshot, e.g. `1.3.0-SNAPSHOT`.
 
 A published version cannot be overwritten in GitHub Packages. To redo a failed release, fix the problem
 and release a new version, or delete the package version in GitHub before re-running the workflow.
