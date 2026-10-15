@@ -3,7 +3,8 @@ name: Publish Release
 # Publishes a release to GitHub Packages with a v* tag on the main branch.
 # The version is taken from the tag: v1.2.3 publishes 1.2.3.
 # The [Unreleased] section of the changelog becomes the release notes and is moved to
-# [1.2.3] - <date> through a pull request to the release and the develop branch.
+# [1.2.3] - <date> through a pull request to the release branch. Merge that pull request (no squash)
+# and merge the release branch back into the develop branch afterwards.
 on:
   workflow_call:
     inputs:
@@ -17,11 +18,6 @@ on:
         type: string
         required: false
         default: main
-      develop-branch:
-        description: Branch that also receives the changelog pull request.
-        type: string
-        required: false
-        default: develop
       changelog:
         description: Path of the changelog, relative to the repository root.
         type: string
@@ -94,7 +90,6 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CHANGELOG: ${{ inputs.changelog }}
           RELEASE_BRANCH: ${{ inputs.release-branch }}
-          DEVELOP_BRANCH: ${{ inputs.develop-branch }}
         run: |
           branch="chore/changelog-$GITHUB_REF_NAME"
           title="chore: changelog for $GITHUB_REF_NAME"
@@ -104,7 +99,5 @@ jobs:
           git add "$CHANGELOG"
           git commit -m "$title"
           git push origin "$branch"
-          for base in "$RELEASE_BRANCH" "$DEVELOP_BRANCH"; do
-            gh pr create --base "$base" --head "$branch" --title "$title" \
-              --body "Moves the [Unreleased] section of \`$CHANGELOG\` to the $GITHUB_REF_NAME release."
-          done
+          gh pr create --base "$RELEASE_BRANCH" --head "$branch" --title "$title" \
+            --body "Moves the [Unreleased] section of \`$CHANGELOG\` to the $GITHUB_REF_NAME release. Merge with a merge commit (no squash or rebase), then merge \`$RELEASE_BRANCH\` back into your develop branch."

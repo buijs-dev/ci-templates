@@ -13,7 +13,7 @@ Shared GitHub Actions.
 | `.github/workflows/coverage.yml`         | reusable workflow | `./gradlew check koverXmlReport` and upload to Codecov                                                    |
 | `.github/workflows/dokka.yml`            | reusable workflow | `./gradlew dokkaGenerate` and deploy to GitHub Pages                                                      |
 | `.github/workflows/publish-snapshot.yml` | reusable workflow | Publish the `-SNAPSHOT` version to Repsy                                                                  |
-| `.github/workflows/publish-release.yml`  | reusable workflow | Publish a tagged release to GitHub Packages, create a GitHub Release and open the changelog pull requests |
+| `.github/workflows/publish-release.yml`  | reusable workflow | Publish a tagged release to GitHub Packages, create a GitHub Release and open the changelog pull request  |
 
 Every workflow accepts a `root-dir` input (default `.`). This is the directory that contains
 `.sdkmanrc`, `gradle.properties` and the Gradle wrapper; all Gradle commands run as `./gradlew` from there.
@@ -202,11 +202,18 @@ That version must end with `-SNAPSHOT`, otherwise the workflow fails.
    - creates a GitHub Release with the `## [Unreleased]` section as release notes;
    - renames `## [Unreleased]` to `## [1.2.0] - <date>` (UTC) below a new, empty `## [Unreleased]`, and moves an
      `[Unreleased]: .../compare/v1.1.0...HEAD` link, if present, to the new tag;
-   - pushes that change to `chore/changelog-v1.2.0` and opens a pull request to `main` and one to `develop`.
-5. Merge both changelog pull requests. Pull requests opened with `GITHUB_TOKEN` don't trigger other workflows,
-   so required status checks on `main` or `develop` won't run for them. When `develop` already has new
-   `## [Unreleased]` entries, resolve the conflict in its pull request.
-6. Bump `version` in `gradle.properties` on `develop` to the next snapshot, e.g. `1.3.0-SNAPSHOT`.
+   - pushes that change to `chore/changelog-v1.2.0` and opens a pull request to `main`.
+5. Merge the changelog pull request with a merge commit (no squash or rebase). Pull requests opened with
+   `GITHUB_TOKEN` don't trigger other workflows, so required status checks on `main` won't run for it.
+6. Merge `main` back into `develop` right away, so both branches share the changelog commit:
+   ```shell
+   git checkout develop
+   git pull
+   git merge origin/main
+   git push
+   ```
+   This only conflicts when `develop` got new `## [Unreleased]` entries in the meantime; keep both.
+7. Bump `version` in `gradle.properties` on `develop` to the next snapshot, e.g. `1.3.0-SNAPSHOT`.
 
 A published version cannot be overwritten in GitHub Packages. To redo a failed release, fix the problem
 and release a new version, or delete the package version in GitHub before re-running the workflow.
