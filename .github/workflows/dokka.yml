@@ -29,14 +29,25 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Set up Java & Gradle
         uses: buijs-dev/ci-templates/.github/actions/setup-java@main
         with:
           root-dir: ${{ inputs.root-dir }}
 
+      # Use the version of the latest v* tag reachable from this commit (v1.2.3 becomes 1.2.3),
+      # or the version in gradle.properties when there is no release yet.
+      - name: Determine version
+        id: version
+        run: |
+          if tag=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null); then
+            echo "args=-Pversion=${tag#v}" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Generate Dokka
-        run: ./gradlew dokkaGenerate --stacktrace
+        run: ./gradlew dokkaGenerate ${{ steps.version.outputs.args }} --stacktrace
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v4

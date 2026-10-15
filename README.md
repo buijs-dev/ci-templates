@@ -128,6 +128,10 @@ jobs:
       root-dir: ${{ vars.ROOT_DIR || '.' }}
 ```
 
+The documentation gets the version of the latest `v*` tag reachable from the built commit (without the `v`),
+regardless of the `-SNAPSHOT` version in `gradle.properties`. Without any release tag, the version from
+`gradle.properties` is used.
+
 ### Publish snapshot
 
 ```yaml
