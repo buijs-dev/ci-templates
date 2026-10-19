@@ -1,0 +1,110 @@
+name: Prepare Release
+
+# Prepares a release from a v* tag on the develop branch. The version is taken from the tag: v1.2.3
+# releases 1.2.3. The [Unreleased] section of the changelog is moved to [1.2.3]; <date> in a commit on
+# develop, the tag is moved to that commit, and a pull request from develop to main is opened (or
+# updated). Merging that pull request publishes the release (publish-release.yml).
+on:
+  workflow_call:
+    inputs:
+      develop-branch:
+        description: Branch the tag must be on; it gets the changelog commit.
+        type: string
+        required: false
+        default: develop
+      main-branch:
+        description: Branch the release pull request targets; merging into it publishes the release.
+        type: string
+        required: false
+        default: main
+      changelog:
+        description: Path of the changelog, relative to the repository root.
+        type: string
+        required: false
+        default: CHANGELOG.md
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      DEVELOP_BRANCH: ${{ inputs.develop-branch }}
+      MAIN_BRANCH: ${{ inputs.main-branch }}
+      CHANGELOG: ${{ inputs.changelog }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      # Nothing is pushed before these checks pass.
+      - name: Verify release tag
+        id: tag
+        run: |
+          if [[ "$GITHUB_REF_TYPE" != "tag" || "$GITHUB_REF_NAME" != v* ]]; then
+            echo "::error::A release is prepared from a v* tag (got $GITHUB_REF_TYPE '$GITHUB_REF_NAME')"
+            exit 1
+          fi
+          version=${GITHUB_REF_NAME#v}
+          if [[ "$version" == *-SNAPSHOT ]]; then
+            echo "::error::Release version must not be a SNAPSHOT ($version)"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" "origin/$DEVELOP_BRANCH"; then
+            echo "::error::Tag $GITHUB_REF_NAME is not on $DEVELOP_BRANCH"
+            exit 1
+          fi
+          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            echo "::error::$GITHUB_REF_NAME is already released"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      # The changelog commit goes on top of develop, which may already be past the tag.
+      - name: Switch to ${{ inputs.develop-branch }}
+        run: git switch -C "$DEVELOP_BRANCH" "origin/$DEVELOP_BRANCH"
+
+      - name: Prepare changelog
+        id: changelog
+        uses: buijs-dev/ci-templates/.github/actions/release-changelog@main
+        with:
+          mode: release
+          version: ${{ steps.tag.outputs.version }}
+          tag: ${{ github.ref_name }}
+          changelog: ${{ inputs.changelog }}
+
+      # Pushes with GITHUB_TOKEN start no other workflows: no snapshot for the changelog commit, and the
+      # moved tag does not start this workflow again.
+      - name: Commit changelog and move tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898898+github-actions[bot]@users.noreply.github.com"
+          git add "$CHANGELOG"
+          git commit -m "chore: changelog for $GITHUB_REF_NAME"
+          git push origin "$DEVELOP_BRANCH"
+          git tag -f "$GITHUB_REF_NAME"
+          git push -f origin "refs/tags/$GITHUB_REF_NAME"
+
+      - name: Open release pull request
+        env:
+          NOTES_FILE: ${{ steps.changelog.outputs.notes-file }}
+        run: |
+          title="release: $GITHUB_REF_NAME"
+          body="$RUNNER_TEMP/pr-body.md"
+          {
+            echo "Releases **$GITHUB_REF_NAME**. Merging this pull request publishes it; merge with a merge commit (no squash or rebase)."
+            echo
+            echo "## Release notes"
+            echo
+            cat "$NOTES_FILE"
+          } > "$body"
+          number=$(gh pr list --base "$MAIN_BRANCH" --head "$DEVELOP_BRANCH" --state open --json number --jq '.[0].number // empty')
+          if [ -n "$number" ]; then
+            gh pr edit "$number" --title "$title" --body-file "$body"
+            echo "Updated pull request #$number"
+          else
+            gh pr create --base "$MAIN_BRANCH" --head "$DEVELOP_BRANCH" --title "$title" --body-file "$body"
+          fi

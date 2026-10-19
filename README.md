@@ -6,14 +6,17 @@ Shared GitHub Actions.
 
 ## Contents
 
-| Path                                     | Type              | Purpose                                                                                                   |
-|------------------------------------------|-------------------|-----------------------------------------------------------------------------------------------------------|
-| `.github/actions/setup-java`             | composite action  | Installs the JDK from `<root-dir>/.sdkmanrc` (temurin) and sets up Gradle                                 |
-| `.github/actions/release-changelog`      | composite action  | Moves `## [Unreleased]` of the changelog to `## [X.Y.Z] - <date>` and extracts the release notes          |
-| `.github/workflows/coverage.yml`         | reusable workflow | `./gradlew check koverXmlReport` and upload to Codecov                                                    |
-| `.github/workflows/dokka.yml`            | reusable workflow | `./gradlew dokkaGenerate` and deploy to GitHub Pages                                                      |
-| `.github/workflows/publish-snapshot.yml` | reusable workflow | Publish the `-SNAPSHOT` version to Repsy                                                                  |
-| `.github/workflows/publish-release.yml`  | reusable workflow | Publish a tagged release to GitHub Packages, create a GitHub Release and open the changelog pull request  |
+| Path                                     | Type              | Purpose                                                                                                     |
+|------------------------------------------|-------------------|-------------------------------------------------------------------------------------------------------------|
+| `.github/actions/setup-java`             | composite action  | Installs the JDK from `<root-dir>/.sdkmanrc` (temurin) and sets up Gradle                                   |
+| `.github/actions/release-changelog`      | composite action  | Moves `## [Unreleased]` of the changelog to `## [X.Y.Z] - <date>`, or reads the notes of a released version |
+| `.github/actions/notify-repository`      | composite action  | Sends a `repository_dispatch` event to another repository (warns and skips without a token)                 |
+| `.github/workflows/astro-pages.yml`      | reusable workflow | Build an Astro (Starlight) site, optionally from other public repositories, and deploy to GitHub Pages      |
+| `.github/workflows/coverage.yml`         | reusable workflow | `./gradlew check koverXmlReport` and upload to Codecov                                                      |
+| `.github/workflows/dokka.yml`            | reusable workflow | `./gradlew dokkaGenerate` and deploy to GitHub Pages                                                        |
+| `.github/workflows/publish-snapshot.yml` | reusable workflow | Publish the `-SNAPSHOT` version to Repsy                                                                    |
+| `.github/workflows/prepare-release.yml`  | reusable workflow | From a `v*` tag on `develop`: update the changelog on `develop` and open the release pull request to `main` |
+| `.github/workflows/publish-release.yml`  | reusable workflow | When the release pull request is merged: publish to GitHub Packages and create the GitHub Release           |
 
 Every workflow accepts a `root-dir` input (default `.`). This is the directory that contains
 `.sdkmanrc`, `gradle.properties` and the Gradle wrapper; all Gradle commands run as `./gradlew` from there.
@@ -32,12 +35,18 @@ with:
 | `CODECOV_TOKEN`  | secret              | `coverage.yml`                 |
 | `REPSY_USERNAME` | secret              | `publish-snapshot.yml`         |
 | `REPSY_PASSWORD` | secret              | `publish-snapshot.yml`         |
+| a dispatch token | secret              | `notify-repository`            |
 
-For `dokka.yml`, enable GitHub Pages with source **GitHub Actions** (Settings → Pages).
-`publish-release.yml` only uses the built-in `GITHUB_TOKEN`. It needs a `CHANGELOG.md` in the repository root
-in [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format with a non-empty `## [Unreleased]` section,
-and **Allow GitHub Actions to create and approve pull requests** enabled (Settings → Actions → General). The Gradle build must define 
-two maven repositories named `Repsy` and `GitHubPackages`:
+For `dokka.yml` and `astro-pages.yml`, enable GitHub Pages with source **GitHub Actions** (Settings → Pages).
+`prepare-release.yml` and `publish-release.yml` only use the built-in `GITHUB_TOKEN`. They need:
+
+- a `CHANGELOG.md` in the repository root in [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format, with
+  a non-empty `## [Unreleased]` section when you tag;
+- **Allow GitHub Actions to create and approve pull requests** (Settings → Actions → General);
+- direct pushes to `develop` by `github-actions[bot]`: no branch protection or ruleset on `develop` that requires a
+  pull request, or one that lets GitHub Actions bypass it. `main` can stay protected.
+
+The Gradle build must define two maven repositories named `Repsy` and `GitHubPackages`:
 
 ```kotlin
 publishing {
@@ -132,6 +141,64 @@ The documentation gets the version of the latest `v*` tag reachable from the bui
 regardless of the `-SNAPSHOT` version in `gradle.properties`. Without any release tag, the version from
 `gradle.properties` is used.
 
+### Astro Pages
+
+Builds the site in `root-dir` with `npm ci`, the optional `prebuild` command and `npm run build`, and deploys
+`dist` to GitHub Pages. The Node version comes from `.nvmrc`. A site that is built from other repositories lists
+them in `sources` (public repositories only, cloned shallow into the given path); when one of them needs Gradle,
+`java-root` installs the JDK from its `.sdkmanrc`. Docker is available on the runner.
+
+```yaml
+name: Pages
+
+on:
+  push:
+    branches: [ main ]
+  repository_dispatch:
+    types: [ contract-updated ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  pages:
+    uses: buijs-dev/ci-templates/.github/workflows/astro-pages.yml@main
+    with:
+      sources: |
+        buijs-dev/stratastax-contract@main:_sources/stratastax-contract
+      java-root: _sources/stratastax-contract
+      prebuild: npm run sync
+```
+
+For a custom domain, set it under Settings → Pages → Custom domain and add a `CNAME` record for it that points
+at `<owner>.github.io` (DNS only, not proxied, or GitHub cannot issue the certificate). With a deployment from
+GitHub Actions no `CNAME` file is needed in the site.
+
+### Notify repository
+
+Triggers a workflow in another repository, for example a rebuild of a documentation site when its sources
+change. The target listens with `on: repository_dispatch: types: [<event-type>]`. The token is a fine-grained
+personal access token (or GitHub App token) with **Contents: Read and write** on the target repository only;
+the built-in `GITHUB_TOKEN` cannot dispatch to another repository. Without the secret the step only warns.
+
+```yaml
+      - name: Rebuild the docs
+        uses: buijs-dev/ci-templates/.github/actions/notify-repository@main
+        with:
+          token: ${{ secrets.DOCS_DISPATCH_TOKEN }}
+          repository: buijs-dev/stratastax-horizon
+          event-type: contract-updated
+          client-payload: '{"sha": "${{ github.sha }}"}'
+```
+
 ### Publish snapshot
 
 ```yaml
@@ -150,10 +217,13 @@ jobs:
     secrets: inherit
 ```
 
-### Publish release
+### Prepare and publish release
+
+Two callers: one starts a release from a tag on `develop`, the other publishes it when the release pull request is
+merged into `main`.
 
 ```yaml
-name: Publish Release
+name: Prepare Release
 
 on:
   push:
@@ -161,8 +231,24 @@ on:
 
 permissions:
   contents: write
-  packages: write
   pull-requests: write
+
+jobs:
+  prepare:
+    uses: buijs-dev/ci-templates/.github/workflows/prepare-release.yml@main
+```
+
+```yaml
+name: Publish Release
+
+on:
+  pull_request:
+    types: [ closed ]
+    branches: [ main ]
+
+permissions:
+  contents: write
+  packages: write
 
 jobs:
   publish:
@@ -176,10 +262,13 @@ jobs:
 Branch strategy:
 
 ```
-feature/* ──PR──▶ develop ──PR──▶ main ──tag vX.Y.Z──▶ GitHub Packages
-                     │
+feature/* ──PR──▶ develop ──tag vX.Y.Z──▶ changelog commit on develop ──PR──▶ main ──merge──▶ GitHub Packages
+                     │                                                                         + GitHub Release
                      └─ every push: X.Y.Z-SNAPSHOT ─▶ Repsy
 ```
+
+`develop` is never merged back from `main`: the changelog commit is made on `develop` itself, so both branches
+share it and the history of `develop` stays linear.
 
 ### Snapshots
 
@@ -188,36 +277,38 @@ That version must end with `-SNAPSHOT`, otherwise the workflow fails.
 
 ### Releases
 
-1. Merge `feature/*` into `develop` through a pull request.
-2. When `develop` is ready to release, merge it into `main` through a pull request.
-3. Tag the merge commit on `main` and push the tag:
+1. Merge `feature/*` into `develop` through a pull request, with an entry under `## [Unreleased]` in the changelog.
+2. When `develop` is ready to release, tag it and push the tag:
    ```shell
-   git checkout main
+   git checkout develop
    git pull
    git tag v1.2.0
    git push origin v1.2.0
    ```
-4. The release workflow then:
-   - checks that the tagged commit is on `main` (a tag anywhere else fails the build);
-   - checks the changelog: a missing `CHANGELOG.md`, a missing or empty `## [Unreleased]` section, or an existing
-     `## [1.2.0]` section fails the build before anything is published;
+3. The prepare workflow then:
+   - checks the tag: `v*`, not a SNAPSHOT, on `develop`, and not released yet; nothing is pushed when a check fails;
+   - renames `## [Unreleased]` to `## [1.2.0] - <date>` (UTC) below a new, empty `## [Unreleased]`, and moves an
+     `[Unreleased]: .../compare/v1.1.0...HEAD` link, if present, to the new tag. A missing `CHANGELOG.md`, a missing
+     or empty `## [Unreleased]` section, or an existing `## [1.2.0]` section fails the workflow;
+   - commits that change to `develop` (on top of `develop`, which may be past the tag) and moves the tag to it;
+   - opens the pull request `release: v1.2.0` from `develop` to `main` with the release notes, or updates the open
+     pull request from `develop` to `main` if there is one.
+4. Fetch the moved tag and the changelog commit: `git pull && git fetch --tags --force`.
+5. Review the pull request and merge it **with a merge commit** (no squash or rebase, so `main` keeps the commits of
+   `develop`). Commits pushed to `develop` while the pull request is open are part of the release.
+   Pull requests opened with `GITHUB_TOKEN` don't trigger other workflows, so required status checks on `main` don't
+   run for it; push a commit to `develop` or re-run the checks by hand when `main` requires them.
+6. The publish workflow then:
+   - finds the latest `v*` tag on the merged `develop` commit without a GitHub Release; a merge from `develop`
+     without one publishes nothing, so `develop` can also be merged into `main` without a release;
    - publishes version `1.2.0` (the tag without `v`) to GitHub Packages with `-Pversion=1.2.0`,
      regardless of the version in `gradle.properties`;
-   - creates a GitHub Release with the `## [Unreleased]` section as release notes;
-   - renames `## [Unreleased]` to `## [1.2.0] - <date>` (UTC) below a new, empty `## [Unreleased]`, and moves an
-     `[Unreleased]: .../compare/v1.1.0...HEAD` link, if present, to the new tag;
-   - pushes that change to `chore/changelog-v1.2.0` and opens a pull request to `main`.
-5. Merge the changelog pull request with a merge commit (no squash or rebase). Pull requests opened with
-   `GITHUB_TOKEN` don't trigger other workflows, so required status checks on `main` won't run for it.
-6. Merge `main` back into `develop` right away, so both branches share the changelog commit:
-   ```shell
-   git checkout develop
-   git pull
-   git merge origin/main
-   git push
-   ```
-   This only conflicts when `develop` got new `## [Unreleased]` entries in the meantime; keep both.
+   - moves the tag to the merge commit on `main`, so it marks exactly the published code;
+   - creates a GitHub Release with the `## [1.2.0]` section of the changelog as release notes.
 7. Bump `version` in `gradle.properties` on `develop` to the next snapshot, e.g. `1.3.0-SNAPSHOT`.
+
+The tag moves twice (to the changelog commit, then to the merge commit on `main`) and only before the release
+exists. Run `git fetch --tags --force` to get its final place.
 
 A published version cannot be overwritten in GitHub Packages. To redo a failed release, fix the problem
 and release a new version, or delete the package version in GitHub before re-running the workflow.

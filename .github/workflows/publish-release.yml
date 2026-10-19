@@ -1,10 +1,10 @@
 name: Publish Release
 
-# Publishes a release to GitHub Packages with a v* tag on the main branch.
-# The version is taken from the tag: v1.2.3 publishes 1.2.3.
-# The [Unreleased] section of the changelog becomes the release notes and is moved to
-# [1.2.3] - <date> through a pull request to the release branch. Merge that pull request (no squash)
-# and merge the release branch back into the develop branch afterwards.
+# Publishes a release when a pull request from develop is merged into main. The release is the latest
+# v* tag on the merged develop commit that has no GitHub Release yet, as prepared by
+# prepare-release.yml; a merge without such a tag publishes nothing. The version is taken from the
+# tag (v1.2.3 publishes 1.2.3), the release notes from its changelog section, and the tag is moved to
+# the merge commit on main, so it marks exactly the published code.
 on:
   workflow_call:
     inputs:
@@ -13,11 +13,11 @@ on:
         type: string
         required: false
         default: .
-      release-branch:
-        description: Branch the tagged commit must be on.
+      develop-branch:
+        description: Head branch of the release pull request.
         type: string
         required: false
-        default: main
+        default: develop
       changelog:
         description: Path of the changelog, relative to the repository root.
         type: string
@@ -26,78 +26,93 @@ on:
 
 jobs:
   publish:
+    # Callers trigger on pull_request closed (into main); only merged pull requests from develop release.
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.event.pull_request.merged && github.event.pull_request.head.ref == inputs.develop-branch)
     runs-on: ubuntu-latest
     permissions:
       contents: write
       packages: write
-      pull-requests: write
     env:
       GITHUB_TOKEN: ${{ github.token }}
+      GH_TOKEN: ${{ github.token }}
     defaults:
       run:
         working-directory: ${{ inputs.root-dir }}
     steps:
+      - name: Verify trigger
+        working-directory: .
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" != "pull_request" ]]; then
+            echo "::error::publish-release.yml runs when the release pull request is merged (on: pull_request: types: [closed]), not on $GITHUB_EVENT_NAME. Tag develop and use prepare-release.yml; see https://github.com/buijs-dev/ci-templates#releases"
+            exit 1
+          fi
+
       - name: Checkout
         uses: actions/checkout@v6
         with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
           fetch-depth: 0
 
-      - name: Verify release tag
-        id: tag
+      - name: Determine release
+        id: release
         env:
-          RELEASE_BRANCH: ${{ inputs.release-branch }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          if [[ "$GITHUB_REF_TYPE" != "tag" || "$GITHUB_REF_NAME" != v* ]]; then
-            echo "::error::Releases must be triggered by a v* tag (got $GITHUB_REF_TYPE '$GITHUB_REF_NAME')"
-            exit 1
+          if ! tag=$(git describe --tags --abbrev=0 --match 'v*' "$HEAD_SHA" 2>/dev/null); then
+            echo "::notice::No v* tag on the merged commits; nothing to release"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
-          if ! git merge-base --is-ancestor "$GITHUB_SHA" "origin/$RELEASE_BRANCH"; then
-            echo "::error::Tag $GITHUB_REF_NAME is not on $RELEASE_BRANCH"
-            exit 1
+          if gh release view "$tag" > /dev/null 2>&1; then
+            echo "::notice::$tag is already released; this merge has no new release"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
-          version=${GITHUB_REF_NAME#v}
+          version=${tag#v}
           if [[ "$version" == *-SNAPSHOT ]]; then
             echo "::error::Release version must not be a SNAPSHOT ($version)"
             exit 1
           fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Releasing $tag"
+          {
+            echo "publish=true"
+            echo "tag=$tag"
+            echo "version=$version"
+          } >> "$GITHUB_OUTPUT"
 
-      - name: Prepare changelog
+      - name: Read release notes
         id: changelog
+        if: steps.release.outputs.publish == 'true'
         uses: buijs-dev/ci-templates/.github/actions/release-changelog@main
         with:
-          version: ${{ steps.tag.outputs.version }}
-          tag: ${{ github.ref_name }}
+          mode: notes
+          version: ${{ steps.release.outputs.version }}
           changelog: ${{ inputs.changelog }}
 
       - name: Set up Java & Gradle
+        if: steps.release.outputs.publish == 'true'
         uses: buijs-dev/ci-templates/.github/actions/setup-java@main
         with:
           root-dir: ${{ inputs.root-dir }}
 
       - name: Publish to GitHub Packages
-        run: ./gradlew publishAllPublicationsToGitHubPackagesRepository -Pversion=${{ steps.tag.outputs.version }} --stacktrace
+        if: steps.release.outputs.publish == 'true'
+        run: ./gradlew publishAllPublicationsToGitHubPackagesRepository -Pversion=${{ steps.release.outputs.version }} --stacktrace
+
+      - name: Move tag to the merge commit
+        if: steps.release.outputs.publish == 'true'
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+        run: |
+          git tag -f "$TAG" "$MERGE_SHA"
+          git push -f origin "refs/tags/$TAG"
 
       - name: Create GitHub Release
-        run: gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file "$NOTES_FILE" --verify-tag
+        if: steps.release.outputs.publish == 'true'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.release.outputs.tag }}
           NOTES_FILE: ${{ steps.changelog.outputs.notes-file }}
-
-      - name: Open changelog pull requests
-        working-directory: ${{ github.workspace }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CHANGELOG: ${{ inputs.changelog }}
-          RELEASE_BRANCH: ${{ inputs.release-branch }}
-        run: |
-          branch="chore/changelog-$GITHUB_REF_NAME"
-          title="chore: changelog for $GITHUB_REF_NAME"
-          git config user.name "github-actions[bot]"
-          git config user.email "41898898+github-actions[bot]@users.noreply.github.com"
-          git switch -c "$branch"
-          git add "$CHANGELOG"
-          git commit -m "$title"
-          git push origin "$branch"
-          gh pr create --base "$RELEASE_BRANCH" --head "$branch" --title "$title" \
-            --body "Moves the [Unreleased] section of \`$CHANGELOG\` to the $GITHUB_REF_NAME release. Merge with a merge commit (no squash or rebase), then merge \`$RELEASE_BRANCH\` back into your develop branch."
+        run: gh release create "$TAG" --title "$TAG" --notes-file "$NOTES_FILE" --verify-tag

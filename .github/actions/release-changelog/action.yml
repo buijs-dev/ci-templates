@@ -1,13 +1,20 @@
 name: Release changelog
-description: Moves the [Unreleased] section of the changelog to a section for the released version.
+description: >
+  Moves the [Unreleased] section of the changelog to a section for the released version (mode release),
+  or reads the section of a released version (mode notes). Both write the section to a notes file.
 
 inputs:
+  mode:
+    description: release (move [Unreleased] to the version) or notes (read the section of the version).
+    required: false
+    default: release
   version:
     description: The released version, e.g. 1.2.0.
     required: true
   tag:
-    description: The release tag, e.g. v1.2.0.
-    required: true
+    description: The release tag, e.g. v1.2.0. Only for mode release.
+    required: false
+    default: ''
   changelog:
     description: Path of the changelog, relative to the repository root.
     required: false
@@ -21,15 +28,31 @@ outputs:
 runs:
   using: composite
   steps:
-    - name: Move [Unreleased] to the released version
+    - name: Changelog (${{ inputs.mode }})
       id: changelog
       shell: bash
       working-directory: ${{ github.workspace }}
       env:
+        MODE: ${{ inputs.mode }}
         CHANGELOG: ${{ inputs.changelog }}
         VERSION: ${{ inputs.version }}
         TAG: ${{ inputs.tag }}
       run: |
         notes_file="$RUNNER_TEMP/release-notes.md"
-        python3 "$GITHUB_ACTION_PATH/release_changelog.py" "$CHANGELOG" "$VERSION" "$TAG" "$(date -u +%F)" "$notes_file"
+        case "$MODE" in
+          release)
+            if [ -z "$TAG" ]; then
+              echo "::error::Mode release needs a tag"
+              exit 1
+            fi
+            python3 "$GITHUB_ACTION_PATH/release_changelog.py" release "$CHANGELOG" "$VERSION" "$TAG" "$(date -u +%F)" "$notes_file"
+            ;;
+          notes)
+            python3 "$GITHUB_ACTION_PATH/release_changelog.py" notes "$CHANGELOG" "$VERSION" "$notes_file"
+            ;;
+          *)
+            echo "::error::Unknown mode '$MODE', expected release or notes"
+            exit 1
+            ;;
+        esac
         echo "notes-file=$notes_file" >> "$GITHUB_OUTPUT"
