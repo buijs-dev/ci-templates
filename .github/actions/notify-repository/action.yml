@@ -1,0 +1,40 @@
+name: Notify repository
+description: >
+  Sends a repository_dispatch event to another repository, for example to rebuild a documentation site.
+  Without a token it only logs a warning, so a caller keeps working before the secret is configured.
+
+inputs:
+  token:
+    description: >
+      Token that may dispatch events to the target repository: a fine-grained personal access token
+      (or GitHub App token) with Contents read and write on that repository. The built-in GITHUB_TOKEN
+      cannot dispatch to another repository.
+    required: false
+    default: ''
+  repository:
+    description: Target repository, as owner/name.
+    required: true
+  event-type:
+    description: Event type the target workflow listens for (on.repository_dispatch.types).
+    required: true
+  client-payload:
+    description: JSON object passed to the target workflow as github.event.client_payload.
+    required: false
+    default: '{}'
+
+runs:
+  using: composite
+  steps:
+    - name: Missing token
+      if: inputs.token == ''
+      shell: bash
+      run: echo "::warning::No token given; ${{ inputs.repository }} does not receive ${{ inputs.event-type }}"
+
+    - name: Dispatch ${{ inputs.event-type }}
+      if: inputs.token != ''
+      uses: peter-evans/repository-dispatch@v3
+      with:
+        token: ${{ inputs.token }}
+        repository: ${{ inputs.repository }}
+        event-type: ${{ inputs.event-type }}
+        client-payload: ${{ inputs.client-payload }}
