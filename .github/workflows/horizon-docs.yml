@@ -1,0 +1,51 @@
+name: Horizon docs
+
+# For a repository with a horizon/ directory (its documentation on docs.stratastax.dev, see
+# https://docs.stratastax.dev/technical/contributing-docs/): checks it, and after a push to the default
+# branch asks stratastax-docs to rebuild.
+on:
+  workflow_call:
+    inputs:
+      root-dir:
+        description: The repository root, containing horizon/.
+        type: string
+        required: false
+        default: .
+      docs-repository:
+        description: The documentation site to notify.
+        type: string
+        required: false
+        default: buijs-dev/stratastax-docs
+    secrets:
+      docs-dispatch-token:
+        description: >
+          Token that may send repository_dispatch to docs-repository (Contents read and write on it). Without it
+          the rebuild is skipped with a warning.
+        required: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Check horizon/
+        uses: buijs-dev/ci-templates/.github/actions/horizon-check@main
+        with:
+          root-dir: ${{ inputs.root-dir }}
+
+  notify:
+    needs: check
+    if: github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ask the documentation site to rebuild
+        uses: buijs-dev/ci-templates/.github/actions/notify-repository@main
+        with:
+          token: ${{ secrets.docs-dispatch-token }}
+          repository: ${{ inputs.docs-repository }}
+          event-type: docs-updated
+          client-payload: '{"repository": "${{ github.repository }}", "sha": "${{ github.sha }}"}'

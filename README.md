@@ -11,8 +11,10 @@ Shared GitHub Actions.
 | `.github/actions/setup-java`             | composite action  | Installs the JDK from `<root-dir>/.sdkmanrc` (temurin) and sets up Gradle                                   |
 | `.github/actions/release-changelog`      | composite action  | Moves `## [Unreleased]` of the changelog to `## [X.Y.Z] - <date>`, or reads the notes of a released version |
 | `.github/actions/notify-repository`      | composite action  | Sends a `repository_dispatch` event to another repository (warns and skips without a token)                 |
+| `.github/actions/horizon-check`          | composite action  | Checks a `horizon/` directory: the manifest, the frontmatter and that every relative link resolves          |
 | `.github/workflows/astro-pages.yml`      | reusable workflow | Build an Astro (Starlight) site, optionally from other public repositories, and deploy to GitHub Pages      |
 | `.github/workflows/coverage.yml`         | reusable workflow | `./gradlew check koverXmlReport` and upload to Codecov                                                      |
+| `.github/workflows/horizon-docs.yml`     | reusable workflow | Check `horizon/` (a repository's pages on docs.stratastax.dev) and ask the site to rebuild after a push     |
 | `.github/workflows/dokka.yml`            | reusable workflow | `./gradlew dokkaGenerate` and deploy to GitHub Pages                                                        |
 | `.github/workflows/publish-snapshot.yml` | reusable workflow | Publish the `-SNAPSHOT` version to Repsy                                                                    |
 | `.github/workflows/prepare-release.yml`  | reusable workflow | From a `v*` tag on `develop`: update the changelog on `develop` and open the release pull request to `main` |
@@ -35,7 +37,8 @@ with:
 | `CODECOV_TOKEN`  | secret              | `coverage.yml`                 |
 | `REPSY_USERNAME` | secret              | `publish-snapshot.yml`         |
 | `REPSY_PASSWORD` | secret              | `publish-snapshot.yml`         |
-| a dispatch token | secret              | `notify-repository`            |
+| a dispatch token | secret              | `notify-repository`, `horizon-docs.yml` (`DOCS_DISPATCH_TOKEN`) |
+| `DOCS_SOURCES_TOKEN` | secret (optional) | `astro-pages.yml` as `sources-token`: read access to private repositories |
 
 For `dokka.yml` and `astro-pages.yml`, enable GitHub Pages with source **GitHub Actions** (Settings → Pages).
 `prepare-release.yml` and `publish-release.yml` only use the built-in `GITHUB_TOKEN`. They need:
@@ -146,7 +149,8 @@ regardless of the `-SNAPSHOT` version in `gradle.properties`. Without any releas
 Builds the site in `root-dir` with `npm ci`, the optional `prebuild` command and `npm run build`, and deploys
 `dist` to GitHub Pages. The Node version comes from `.nvmrc`. A site that is built from other repositories lists
 them in `sources` (public repositories only, cloned shallow into the given path); when one of them needs Gradle,
-`java-root` installs the JDK from its `.sdkmanrc`. Docker is available on the runner.
+`java-root` installs the JDK from its `.sdkmanrc`. Docker is available on the runner. The optional secret
+`sources-token` reaches the prebuild as `STX_SOURCES_TOKEN`, for a sync that reads private repositories too.
 
 ```yaml
 name: Pages
@@ -182,6 +186,34 @@ For a custom domain, set it under Settings → Pages → Custom domain and add a
 at `<owner>.github.io` (DNS only, not proxied, or GitHub cannot issue the certificate). With a deployment from
 GitHub Actions no `CNAME` file is needed in the site.
 
+### Horizon docs
+
+A repository documents itself on docs.stratastax.dev with a `horizon/` directory (a `horizon.yaml` manifest, an
+`index.md` and further pages; see
+[Contributing documentation](https://docs.stratastax.dev/technical/contributing-docs/)). This workflow checks it
+on every pull request that touches it, and after a push to the default branch sends `docs-updated` to
+stratastax-docs so the site rebuilds. Register the repository once in `sources.yaml` of stratastax-docs.
+
+```yaml
+name: Horizon docs
+
+on:
+  pull_request:
+    paths: [ horizon/** ]
+  push:
+    branches: [ main ]
+    paths: [ horizon/** ]
+
+permissions:
+  contents: read
+
+jobs:
+  horizon:
+    uses: buijs-dev/ci-templates/.github/workflows/horizon-docs.yml@main
+    secrets:
+      docs-dispatch-token: ${{ secrets.DOCS_DISPATCH_TOKEN }}
+```
+
 ### Notify repository
 
 Triggers a workflow in another repository, for example a rebuild of a documentation site when its sources
@@ -194,7 +226,7 @@ the built-in `GITHUB_TOKEN` cannot dispatch to another repository. Without the s
         uses: buijs-dev/ci-templates/.github/actions/notify-repository@main
         with:
           token: ${{ secrets.DOCS_DISPATCH_TOKEN }}
-          repository: buijs-dev/stratastax-horizon
+          repository: buijs-dev/stratastax-docs
           event-type: contract-updated
           client-payload: '{"sha": "${{ github.sha }}"}'
 ```
@@ -339,3 +371,7 @@ maven("https://maven.pkg.github.com/buijs-dev/*") {
   gpr.user=<github username>
   gpr.key=<token>
   ```
+
+## Documentation
+
+The Stratastax documentation is on [docs.stratastax.dev](https://docs.stratastax.dev/). Its page there is [Gradle and CI](https://docs.stratastax.dev/technical/components/gradle/).

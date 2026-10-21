@@ -39,6 +39,12 @@ on:
         type: string
         required: false
         default: dist
+    secrets:
+      sources-token:
+        description: >
+          Optional token the prebuild can use to read private repositories (as STX_SOURCES_TOKEN), for
+          example a fine-grained token with Contents read on them. Without it the prebuild sees none.
+        required: false
 
 jobs:
   build:
@@ -94,6 +100,8 @@ jobs:
 
       - name: Prebuild
         if: inputs.prebuild != ''
+        env:
+          STX_SOURCES_TOKEN: ${{ secrets.sources-token }}
         run: ${{ inputs.prebuild }}
 
       - name: Build
