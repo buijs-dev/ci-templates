@@ -4,7 +4,9 @@ name: Publish Release
 # v* tag on the merged develop commit that has no GitHub Release yet, as prepared by
 # prepare-release.yml; a merge without such a tag publishes nothing. The version is taken from the
 # tag (v1.2.3 publishes 1.2.3), the release notes from its changelog section, and the tag is moved to
-# the merge commit on main, so it marks exactly the published code.
+# the merge commit on main, so it marks exactly the published code. The release goes to Maven Central
+# (publishToMavenCentral of the vanniktech maven-publish plugin, signed), with the secrets
+# MAVEN_CENTRAL_USERNAME, MAVEN_CENTRAL_PASSWORD, SIGNING_KEY and SIGNING_PASSWORD (secrets: inherit).
 on:
   workflow_call:
     inputs:
@@ -33,9 +35,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      packages: write
     env:
-      GITHUB_TOKEN: ${{ github.token }}
       GH_TOKEN: ${{ github.token }}
     defaults:
       run:
@@ -97,9 +97,19 @@ jobs:
         with:
           root-dir: ${{ inputs.root-dir }}
 
-      - name: Publish to GitHub Packages
+      - name: Publish to Maven Central
         if: steps.release.outputs.publish == 'true'
-        run: ./gradlew publishAllPublicationsToGitHubPackagesRepository -Pversion=${{ steps.release.outputs.version }} --stacktrace
+        env:
+          ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.SIGNING_KEY }}
+          ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.SIGNING_PASSWORD }}
+        run: |
+          if [[ -z "$ORG_GRADLE_PROJECT_mavenCentralUsername" || -z "$ORG_GRADLE_PROJECT_signingInMemoryKey" ]]; then
+            echo "::error::Maven Central needs the secrets MAVEN_CENTRAL_USERNAME, MAVEN_CENTRAL_PASSWORD, SIGNING_KEY and SIGNING_PASSWORD (secrets: inherit)"
+            exit 1
+          fi
+          ./gradlew publishToMavenCentral -Pversion=${{ steps.release.outputs.version }} --stacktrace
 
       - name: Move tag to the merge commit
         if: steps.release.outputs.publish == 'true'

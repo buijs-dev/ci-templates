@@ -15,10 +15,9 @@ Shared GitHub Actions.
 | `.github/workflows/astro-pages.yml`      | reusable workflow | Build an Astro (Starlight) site, optionally from other public repositories, and deploy to GitHub Pages      |
 | `.github/workflows/coverage.yml`         | reusable workflow | `./gradlew check koverXmlReport` and upload to Codecov                                                      |
 | `.github/workflows/horizon-docs.yml`     | reusable workflow | Check `horizon/` (a repository's pages on docs.stratastax.dev) and ask the site to rebuild after a push     |
-| `.github/workflows/dokka.yml`            | reusable workflow | `./gradlew dokkaGenerate` and deploy to GitHub Pages                                                        |
 | `.github/workflows/publish-snapshot.yml` | reusable workflow | Publish the `-SNAPSHOT` version to Repsy                                                                    |
 | `.github/workflows/prepare-release.yml`  | reusable workflow | From a `v*` tag on `develop`: update the changelog on `develop` and open the release pull request to `main` |
-| `.github/workflows/publish-release.yml`  | reusable workflow | When the release pull request is merged: publish to GitHub Packages and create the GitHub Release           |
+| `.github/workflows/publish-release.yml`  | reusable workflow | When the release pull request is merged: publish to Maven Central and create the GitHub Release                      |
 
 Every workflow accepts a `root-dir` input (default `.`). This is the directory that contains
 `.sdkmanrc`, `gradle.properties` and the Gradle wrapper; all Gradle commands run as `./gradlew` from there.
@@ -39,30 +38,27 @@ with:
 | `REPSY_PASSWORD` | secret              | `publish-snapshot.yml`         |
 | a dispatch token | secret              | `notify-repository`, `horizon-docs.yml` (`DOCS_DISPATCH_TOKEN`) |
 | `DOCS_SOURCES_TOKEN` | secret (optional) | `astro-pages.yml` as `sources-token`: read access to private repositories |
+| `MAVEN_CENTRAL_USERNAME`, `MAVEN_CENTRAL_PASSWORD` | secret | `publish-release.yml` (required): a Central Portal user token |
+| `SIGNING_KEY`, `SIGNING_PASSWORD` | secret | `publish-release.yml` (required): the ASCII-armored GPG key and its passphrase |
 
-For `dokka.yml` and `astro-pages.yml`, enable GitHub Pages with source **GitHub Actions** (Settings → Pages).
-`prepare-release.yml` and `publish-release.yml` only use the built-in `GITHUB_TOKEN`. They need:
+For `astro-pages.yml`, enable GitHub Pages with source **GitHub Actions** (Settings → Pages).
+`prepare-release.yml` and `publish-release.yml` use the built-in `GITHUB_TOKEN`, and `publish-release.yml` also the
+Maven Central and signing secrets above (pass them with `secrets: inherit`). They need:
 
 - a `CHANGELOG.md` in the repository root in [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format, with
   a non-empty `## [Unreleased]` section when you tag;
 - **Allow GitHub Actions to create and approve pull requests** (Settings → Actions → General);
-- direct pushes to `develop` by `github-actions[bot]`: no branch protection or ruleset on `develop` that requires a
-  pull request, or one that lets GitHub Actions bypass it. `main` can stay protected.
+- direct pushes to `develop` by `github-actions[bot]`: `prepare-release.yml` commits the changelog to `develop`
+  itself. Either `develop` has no branch protection or ruleset that requires a pull request, or its ruleset has a
+  bypass for the **GitHub Actions** app (integration id `15368`) with bypass mode **always** (Settings → Rules →
+  Rulesets → Bypass list → Add bypass → Apps → GitHub Actions). Classic branch protection has no such bypass, so use
+  a ruleset. `main` can stay protected.
 
-The Gradle build must define two maven repositories named `Repsy` and `GitHubPackages`:
+The Gradle build must define a maven repository named `Repsy`, for snapshots:
 
 ```kotlin
 publishing {
     repositories {
-        maven {
-            name = "GitHubPackages"
-            url = uri("https://maven.pkg.github.com/buijs-dev/<repository>")
-            credentials {
-                username = System.getenv("GITHUB_ACTOR")
-                password = System.getenv("GITHUB_TOKEN")
-            }
-        }
-        
         maven {
             name = "Repsy"
             url = uri("https://repo.repsy.io/mvn/buijs-dev/maven")
@@ -74,6 +70,11 @@ publishing {
     }
 }
 ```
+
+and apply the [vanniktech maven-publish plugin](https://vanniktech.github.io/gradle-maven-publish-plugin/) for
+releases, whose `publishToMavenCentral` task signs and uploads to Maven Central. Central requires a `-sources.jar`
+and a `-javadoc.jar`; the plugin builds the latter with Dokka, so Dokka stays in the build. The `buijs.publishing`
+plugin of [gradle-conventions](https://github.com/buijs-dev/gradle-conventions) does both.
 
 All snapshots go to one public Repsy repository (`https://repo.repsy.io/mvn/buijs-dev/maven`,
 web UI: https://repsy.io/buijs-dev/maven). Reading needs no credentials, so a repository that depends
@@ -110,39 +111,6 @@ jobs:
       root-dir: ${{ vars.ROOT_DIR || '.' }}
     secrets: inherit
 ```
-
-### Dokka
-
-A reusable workflow cannot grant itself more permissions than the caller has, so the caller declares them.
-
-```yaml
-name: Dokka
-
-on:
-  push:
-    branches: [ main ]
-  workflow_dispatch:
-
-permissions:
-  contents: read
-  packages: read
-  pages: write
-  id-token: write
-
-concurrency:
-  group: pages
-  cancel-in-progress: false
-
-jobs:
-  dokka:
-    uses: buijs-dev/ci-templates/.github/workflows/dokka.yml@main
-    with:
-      root-dir: ${{ vars.ROOT_DIR || '.' }}
-```
-
-The documentation gets the version of the latest `v*` tag reachable from the built commit (without the `v`),
-regardless of the `-SNAPSHOT` version in `gradle.properties`. Without any release tag, the version from
-`gradle.properties` is used.
 
 ### Astro Pages
 
@@ -280,21 +248,27 @@ on:
 
 permissions:
   contents: write
-  packages: write
 
 jobs:
   publish:
     uses: buijs-dev/ci-templates/.github/workflows/publish-release.yml@main
     with:
       root-dir: ${{ vars.ROOT_DIR || '.' }}
+    secrets: inherit
 ```
+
+### Upgrading
+
+`publish-release.yml` no longer has a `target` input: it always publishes to Maven Central. Remove `target:` from
+the caller (an unknown input fails the workflow), pass `secrets: inherit`, and drop `packages: write` from its
+`permissions`. `dokka.yml` is gone: delete a caller of it. Dokka itself stays in the build, for the `-javadoc.jar`.
 
 ## Publishing
 
 Branch strategy:
 
 ```
-feature/* ──PR──▶ develop ──tag vX.Y.Z──▶ changelog commit on develop ──PR──▶ main ──merge──▶ GitHub Packages
+feature/* ──PR──▶ develop ──tag vX.Y.Z──▶ changelog commit on develop ──PR──▶ main ──merge──▶ Maven Central
                      │                                                                         + GitHub Release
                      └─ every push: X.Y.Z-SNAPSHOT ─▶ Repsy
 ```
@@ -333,7 +307,7 @@ That version must end with `-SNAPSHOT`, otherwise the workflow fails.
 6. The publish workflow then:
    - finds the latest `v*` tag on the merged `develop` commit without a GitHub Release; a merge from `develop`
      without one publishes nothing, so `develop` can also be merged into `main` without a release;
-   - publishes version `1.2.0` (the tag without `v`) to GitHub Packages with `-Pversion=1.2.0`,
+   - publishes version `1.2.0` (the tag without `v`) to Maven Central, signed, with `-Pversion=1.2.0`,
      regardless of the version in `gradle.properties`;
    - moves the tag to the merge commit on `main`, so it marks exactly the published code;
    - creates a GitHub Release with the `## [1.2.0]` section of the changelog as release notes.
@@ -342,35 +316,15 @@ That version must end with `-SNAPSHOT`, otherwise the workflow fails.
 The tag moves twice (to the changelog commit, then to the merge commit on `main`) and only before the release
 exists. Run `git fetch --tags --force` to get its final place.
 
-A published version cannot be overwritten in GitHub Packages. To redo a failed release, fix the problem
-and release a new version, or delete the package version in GitHub before re-running the workflow.
+A release on Maven Central can never be removed or replaced: a failed release is always a new version.
 
 ### Consuming releases
 
-Reading from GitHub Packages requires authentication, also for public packages. 
-Add this repository to `pluginManagement` and build.gradle(.kts) `repositories`:
+Releases are on Maven Central; no authentication is needed. `mavenCentral()` in `pluginManagement` and
+build.gradle(.kts) `repositories` is enough.
 
-```kotlin
-maven("https://maven.pkg.github.com/buijs-dev/*") {
-    credentials {
-        username = providers.gradleProperty("gpr.user").orElse(providers.environmentVariable("GITHUB_ACTOR")).orNull
-        password = providers.gradleProperty("gpr.key").orElse(providers.environmentVariable("GITHUB_TOKEN")).orNull
-    }
-    mavenContent {
-        releasesOnly()
-        includeGroupByRegex("dev\\.buijs.*")
-    }
-}
-```
-
-- **CI**: the templates pass `GITHUB_TOKEN` to Gradle and request `packages: read`; `GITHUB_ACTOR` is set by the
-  runner. A caller that declares its own `permissions` (like Dokka) must include `packages: read`.
-- **Locally**: create a classic personal access token with the `read:packages` scope and add it to
-  `~/.gradle/gradle.properties` (never to the repository):
-  ```properties
-  gpr.user=<github username>
-  gpr.key=<token>
-  ```
+`coverage.yml`, `publish-snapshot.yml` and `astro-pages.yml` still request `packages: read` and pass `GITHUB_TOKEN`
+to the build, for builds that still resolve older releases from GitHub Packages. They go once no caller needs them.
 
 ## Documentation
 
