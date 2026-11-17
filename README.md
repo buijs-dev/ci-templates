@@ -93,12 +93,7 @@ All snapshots of all repositories go to the same Repsy repository. Reading needs
 that depends on a SNAPSHOT adds it to `pluginManagement` and build.gradle(.kts) repositories:
 
 ```kotlin
-maven("https://repo.repsy.io/mvn/buijs-dev/maven") {
-    mavenContent {
-        snapshotsOnly()
-        includeGroupByRegex("dev\\.buijs.*")
-    }
-}
+maven("https://repo.repsy.io/mvn/buijs-dev/maven")
 ```
 
 ## Usage
@@ -366,9 +361,7 @@ No authentication is needed. Libraries are on Maven Central: `mavenCentral()` in
 `repositories` for a dependency such as a rule set):
 
 ```kotlin
-maven("https://repo.repsy.io/mvn/buijs-dev/maven") {
-    mavenContent { includeGroupByRegex("dev\\.buijs.*") }
-}
+maven("https://repo.repsy.io/mvn/buijs-dev/maven")
 ```
 
 `coverage.yml`, `publish-snapshot.yml` and `astro-pages.yml` still request `packages: read` and pass `GITHUB_TOKEN`
