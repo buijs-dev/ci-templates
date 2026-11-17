@@ -4,9 +4,12 @@ name: Publish Release
 # v* tag on the merged develop commit that has no GitHub Release yet, as prepared by
 # prepare-release.yml; a merge without such a tag publishes nothing. The version is taken from the
 # tag (v1.2.3 publishes 1.2.3), the release notes from its changelog section, and the tag is moved to
-# the merge commit on main, so it marks exactly the published code. The release goes to Maven Central
-# (publishToMavenCentral of the vanniktech maven-publish plugin, signed), with the secrets
-# MAVEN_CENTRAL_USERNAME, MAVEN_CENTRAL_PASSWORD, SIGNING_KEY and SIGNING_PASSWORD (secrets: inherit).
+# the merge commit on main, so it marks exactly the published code. The input target picks where the
+# release goes (secrets: inherit):
+# - maven-central (default): publishToMavenCentral of the vanniktech maven-publish plugin, signed, with
+#   the secrets MAVEN_CENTRAL_USERNAME, MAVEN_CENTRAL_PASSWORD, SIGNING_KEY and SIGNING_PASSWORD;
+# - repsy: publishAllPublicationsToRepsyRepository, to https://repo.repsy.io/buijs-dev/maven2, with the
+#   secrets REPSY_USERNAME and REPSY_PASSWORD. No signing secrets are needed.
 on:
   workflow_call:
     inputs:
@@ -25,6 +28,11 @@ on:
         type: string
         required: false
         default: CHANGELOG.md
+      target:
+        description: Where the release goes, maven-central or repsy.
+        type: string
+        required: false
+        default: maven-central
 
 jobs:
   publish:
@@ -41,9 +49,15 @@ jobs:
       run:
         working-directory: ${{ inputs.root-dir }}
     steps:
-      - name: Verify trigger
+      - name: Verify inputs
         working-directory: .
+        env:
+          TARGET: ${{ inputs.target }}
         run: |
+          if [[ "$TARGET" != "maven-central" && "$TARGET" != "repsy" ]]; then
+            echo "::error::target must be maven-central or repsy (found '$TARGET')"
+            exit 1
+          fi
           if [[ "$GITHUB_EVENT_NAME" != "pull_request" ]]; then
             echo "::error::publish-release.yml runs when the release pull request is merged (on: pull_request: types: [closed]), not on $GITHUB_EVENT_NAME. Tag develop and use prepare-release.yml; see https://github.com/buijs-dev/ci-templates#releases"
             exit 1
@@ -98,7 +112,7 @@ jobs:
           root-dir: ${{ inputs.root-dir }}
 
       - name: Publish to Maven Central
-        if: steps.release.outputs.publish == 'true'
+        if: steps.release.outputs.publish == 'true' && inputs.target == 'maven-central'
         env:
           ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
           ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
@@ -110,6 +124,18 @@ jobs:
             exit 1
           fi
           ./gradlew publishToMavenCentral -Pversion=${{ steps.release.outputs.version }} --stacktrace
+
+      - name: Publish to Repsy
+        if: steps.release.outputs.publish == 'true' && inputs.target == 'repsy'
+        env:
+          REPSY_USERNAME: ${{ secrets.REPSY_USERNAME }}
+          REPSY_PASSWORD: ${{ secrets.REPSY_PASSWORD }}
+        run: |
+          if [[ -z "$REPSY_USERNAME" || -z "$REPSY_PASSWORD" ]]; then
+            echo "::error::Repsy needs the secrets REPSY_USERNAME and REPSY_PASSWORD (secrets: inherit)"
+            exit 1
+          fi
+          ./gradlew publishAllPublicationsToRepsyRepository -Pversion=${{ steps.release.outputs.version }} --stacktrace
 
       - name: Move tag to the merge commit
         if: steps.release.outputs.publish == 'true'

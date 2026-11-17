@@ -17,7 +17,7 @@ Shared GitHub Actions.
 | `.github/workflows/horizon-docs.yml`     | reusable workflow | Check `horizon/` (a repository's pages on docs.stratastax.dev) and ask the site to rebuild after a push     |
 | `.github/workflows/publish-snapshot.yml` | reusable workflow | Publish the `-SNAPSHOT` version to Repsy                                                                    |
 | `.github/workflows/prepare-release.yml`  | reusable workflow | From a `v*` tag on `develop`: open a pull request with the changelog to `develop`; once merged, open the release pull request to `main` |
-| `.github/workflows/publish-release.yml`  | reusable workflow | When the release pull request is merged: publish to Maven Central and create the GitHub Release |
+| `.github/workflows/publish-release.yml`  | reusable workflow | When the release pull request is merged: publish to Maven Central or Repsy (`target`) and create the GitHub Release |
 
 Every workflow accepts a `root-dir` input (default `.`). This is the directory that contains
 `.sdkmanrc`, `gradle.properties` and the Gradle wrapper; all Gradle commands run as `./gradlew` from there.
@@ -34,16 +34,16 @@ with:
 |------------------|---------------------|--------------------------------|
 | `ROOT_DIR`       | variable (optional) | All workflows, defaults to `.` |
 | `CODECOV_TOKEN`  | secret              | `coverage.yml`                 |
-| `REPSY_USERNAME` | secret              | `publish-snapshot.yml`         |
-| `REPSY_PASSWORD` | secret              | `publish-snapshot.yml`         |
+| `REPSY_USERNAME` | secret              | `publish-snapshot.yml`, `publish-release.yml` with `target: repsy` |
+| `REPSY_PASSWORD` | secret              | `publish-snapshot.yml`, `publish-release.yml` with `target: repsy` |
 | a dispatch token | secret              | `notify-repository`, `horizon-docs.yml` (`DOCS_DISPATCH_TOKEN`) |
 | `DOCS_SOURCES_TOKEN` | secret (optional) | `astro-pages.yml` as `sources-token`: read access to private repositories |
-| `MAVEN_CENTRAL_USERNAME`, `MAVEN_CENTRAL_PASSWORD` | secret | `publish-release.yml` (required): a Central Portal user token |
-| `SIGNING_KEY`, `SIGNING_PASSWORD` | secret | `publish-release.yml` (required): the ASCII-armored GPG key and its passphrase |
+| `MAVEN_CENTRAL_USERNAME`, `MAVEN_CENTRAL_PASSWORD` | secret | `publish-release.yml` with `target: maven-central`: a Central Portal user token |
+| `SIGNING_KEY`, `SIGNING_PASSWORD` | secret | `publish-release.yml` with `target: maven-central`: the ASCII-armored GPG key and its passphrase |
 
 For `astro-pages.yml`, enable GitHub Pages with source **GitHub Actions** (Settings → Pages).
 `prepare-release.yml` and `publish-release.yml` use the built-in `GITHUB_TOKEN`, and `publish-release.yml` also the
-Maven Central and signing secrets above (pass them with `secrets: inherit`). They need:
+secrets of its target above (pass them with `secrets: inherit`). They need:
 
 - a `CHANGELOG.md` in the repository root in [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format, with
   a non-empty `## [Unreleased]` section when you tag;
@@ -57,14 +57,15 @@ their required status checks don't run by themselves, and there is no run to re-
 reopen the pull request yourself: the `reopened` event comes from you, so the checks run. After that, a failed check
 can be re-run from the Checks tab.
 
-The Gradle build must define a maven repository named `Repsy`, for snapshots:
+The Gradle build must define a maven repository named `Repsy`, for snapshots and for releases with
+`target: repsy`:
 
 ```kotlin
 publishing {
     repositories {
         maven {
             name = "Repsy"
-            url = uri("https://repo.repsy.io/mvn/buijs-dev/maven")
+            url = uri("https://repo.repsy.io/buijs-dev/maven2")
             credentials {
                 username = System.getenv("REPSY_USERNAME")
                 password = System.getenv("REPSY_PASSWORD")
@@ -74,17 +75,25 @@ publishing {
 }
 ```
 
-and apply the [vanniktech maven-publish plugin](https://vanniktech.github.io/gradle-maven-publish-plugin/) for
-releases, whose `publishToMavenCentral` task signs and uploads to Maven Central. Central requires a `-sources.jar`
-and a `-javadoc.jar`; the plugin builds the latter with Dokka, so Dokka stays in the build. The `buijs.publishing`
-plugin of [gradle-conventions](https://github.com/buijs-dev/gradle-conventions) does both.
+For releases with `target: maven-central`, the build also applies the
+[vanniktech maven-publish plugin](https://vanniktech.github.io/gradle-maven-publish-plugin/), whose
+`publishToMavenCentral` task signs and uploads to Maven Central. Central requires a `-sources.jar` and a
+`-javadoc.jar`; the plugin builds the latter with Dokka, so Dokka stays in the build. The `dev.buijs.conventions.publishing`
+plugin of [gradle-conventions](https://github.com/buijs-dev/gradle-conventions) defines `Repsy` always, and sets up
+Maven Central when `gradle.properties` has `conventions.mavenCentral=true`.
 
-All snapshots go to one public Repsy repository (`https://repo.repsy.io/mvn/buijs-dev/maven`,
-web UI: https://repsy.io/buijs-dev/maven). Reading needs no credentials, so a repository that depends
-on another SNAPSHOT adds it to `pluginManagement` and build.gradle(.kts) repositories:
+The two targets:
+
+- `maven-central` (the default): the public libraries. Every dependency of an artifact on Central must resolve from
+  Central too, so it never depends at runtime on something that is only on Repsy.
+- `repsy`: the build tooling (Gradle plugins and the style rules), to the public Repsy repository
+  `https://repo.repsy.io/buijs-dev/maven2`. It is never released to Central.
+
+All snapshots of all repositories go to the same Repsy repository. Reading needs no credentials, so a repository
+that depends on a SNAPSHOT adds it to `pluginManagement` and build.gradle(.kts) repositories:
 
 ```kotlin
-maven("https://repo.repsy.io/mvn/buijs-dev/maven") {
+maven("https://repo.repsy.io/buijs-dev/maven2") {
     mavenContent {
         snapshotsOnly()
         includeGroupByRegex("dev\\.buijs.*")
@@ -270,10 +279,24 @@ jobs:
     secrets: inherit
 ```
 
+This publishes to Maven Central. Build tooling publishes to Repsy instead:
+
+```yaml
+    with:
+      root-dir: ${{ vars.ROOT_DIR || '.' }}
+      target: repsy
+    secrets: inherit
+```
+
+A `target` other than `maven-central` or `repsy` fails the workflow.
+
 ### Upgrading
 
-- `publish-release.yml`: remove `target:` (an unknown input fails the workflow), pass `secrets: inherit`, and drop
-  `packages: write` from `permissions`. It always publishes to Maven Central.
+- `publish-release.yml`: pass `secrets: inherit` and drop `packages: write` from `permissions`. A public library
+  keeps the default `target` (`maven-central`); build tooling sets `target: repsy`. The GitHub Packages target is
+  gone.
+- Repsy: replace `https://repo.repsy.io/mvn/buijs-dev/maven` with `https://repo.repsy.io/buijs-dev/maven2` in the
+  `Repsy` publishing repository, `pluginManagement` and build.gradle(.kts) repositories.
 - `prepare-release.yml`: add `pull_request: types: [ closed ], branches: [ develop ]` to `on:`, and pass
   `root-dir` when `gradle.properties` is not in the repository root. Without the new trigger the release stops after
   the pull request to `develop` is merged.
@@ -284,7 +307,7 @@ jobs:
 Branch strategy:
 
 ```
-feature/* ──PR──▶ develop ──tag vX.Y.Z──▶ release/X.Y.Z ──PR──▶ develop ──PR──▶ main ──merge──▶ Maven Central
+feature/* ──PR──▶ develop ──tag vX.Y.Z──▶ release/X.Y.Z ──PR──▶ develop ──PR──▶ main ──merge──▶ Maven Central or Repsy
                      │                  (changelog, next SNAPSHOT)                              + GitHub Release
                      └─ every push: X.Y.Z-SNAPSHOT ─▶ Repsy
 ```
@@ -327,8 +350,8 @@ That version must end with `-SNAPSHOT`, otherwise the workflow fails.
 7. The publish workflow then:
    - finds the latest `v*` tag on the merged `develop` commit without a GitHub Release; a merge from `develop`
      without one publishes nothing, so `develop` can also be merged into `main` without a release;
-   - publishes version `1.2.0` (the tag without `v`) to Maven Central, signed, with `-Pversion=1.2.0`,
-     regardless of the version in `gradle.properties`;
+   - publishes version `1.2.0` (the tag without `v`) with `-Pversion=1.2.0`, regardless of the version in
+     `gradle.properties`: to Maven Central, signed, or with `target: repsy` to Repsy;
    - moves the tag to the merge commit on `main`, so it marks exactly the published code;
    - creates a GitHub Release with the `## [1.2.0]` section of the changelog as release notes.
 8. Update your clone: `git pull && git fetch --tags --force`.
@@ -340,8 +363,15 @@ A release on Maven Central can never be removed or replaced: a failed release is
 
 ### Consuming releases
 
-Releases are on Maven Central; no authentication is needed. `mavenCentral()` in `pluginManagement` and
-build.gradle(.kts) `repositories` is enough.
+No authentication is needed. Libraries are on Maven Central: `mavenCentral()` in build.gradle(.kts)
+`repositories` is enough. Build tooling is on Repsy: add it to `pluginManagement` (and to build.gradle(.kts)
+`repositories` for a dependency such as a rule set):
+
+```kotlin
+maven("https://repo.repsy.io/buijs-dev/maven2") {
+    mavenContent { includeGroupByRegex("dev\\.buijs.*") }
+}
+```
 
 `coverage.yml`, `publish-snapshot.yml` and `astro-pages.yml` still request `packages: read` and pass `GITHUB_TOKEN`
 to the build, for builds that still resolve older releases from GitHub Packages. They go once no caller needs them.
