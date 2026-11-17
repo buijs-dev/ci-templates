@@ -15,10 +15,9 @@ Shared GitHub Actions.
 | `.github/workflows/astro-pages.yml`      | reusable workflow | Build an Astro (Starlight) site, optionally from other public repositories, and deploy to GitHub Pages      |
 | `.github/workflows/coverage.yml`         | reusable workflow | `./gradlew check koverXmlReport` and upload to Codecov                                                      |
 | `.github/workflows/horizon-docs.yml`     | reusable workflow | Check `horizon/` (a repository's pages on docs.stratastax.dev) and ask the site to rebuild after a push     |
-| `.github/workflows/dokka.yml`            | reusable workflow | `./gradlew dokkaGenerate` and deploy to GitHub Pages                                                        |
 | `.github/workflows/publish-snapshot.yml` | reusable workflow | Publish the `-SNAPSHOT` version to Repsy                                                                    |
-| `.github/workflows/prepare-release.yml`  | reusable workflow | From a `v*` tag on `develop`: update the changelog on `develop` and open the release pull request to `main` |
-| `.github/workflows/publish-release.yml`  | reusable workflow | When the release pull request is merged: publish to GitHub Packages and create the GitHub Release           |
+| `.github/workflows/prepare-release.yml`  | reusable workflow | From a `v*` tag on `develop`: open a pull request with the changelog to `develop`; once merged, open the release pull request to `main` |
+| `.github/workflows/publish-release.yml`  | reusable workflow | When the release pull request is merged: publish to Maven Central and create the GitHub Release |
 
 Every workflow accepts a `root-dir` input (default `.`). This is the directory that contains
 `.sdkmanrc`, `gradle.properties` and the Gradle wrapper; all Gradle commands run as `./gradlew` from there.
@@ -39,30 +38,30 @@ with:
 | `REPSY_PASSWORD` | secret              | `publish-snapshot.yml`         |
 | a dispatch token | secret              | `notify-repository`, `horizon-docs.yml` (`DOCS_DISPATCH_TOKEN`) |
 | `DOCS_SOURCES_TOKEN` | secret (optional) | `astro-pages.yml` as `sources-token`: read access to private repositories |
+| `MAVEN_CENTRAL_USERNAME`, `MAVEN_CENTRAL_PASSWORD` | secret | `publish-release.yml` (required): a Central Portal user token |
+| `SIGNING_KEY`, `SIGNING_PASSWORD` | secret | `publish-release.yml` (required): the ASCII-armored GPG key and its passphrase |
 
-For `dokka.yml` and `astro-pages.yml`, enable GitHub Pages with source **GitHub Actions** (Settings → Pages).
-`prepare-release.yml` and `publish-release.yml` only use the built-in `GITHUB_TOKEN`. They need:
+For `astro-pages.yml`, enable GitHub Pages with source **GitHub Actions** (Settings → Pages).
+`prepare-release.yml` and `publish-release.yml` use the built-in `GITHUB_TOKEN`, and `publish-release.yml` also the
+Maven Central and signing secrets above (pass them with `secrets: inherit`). They need:
 
 - a `CHANGELOG.md` in the repository root in [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format, with
   a non-empty `## [Unreleased]` section when you tag;
 - **Allow GitHub Actions to create and approve pull requests** (Settings → Actions → General);
-- direct pushes to `develop` by `github-actions[bot]`: no branch protection or ruleset on `develop` that requires a
-  pull request, or one that lets GitHub Actions bypass it. `main` can stay protected.
+- rulesets on `develop` and `main` that require a pull request may stay as they are, without a bypass: no workflow
+  pushes to `develop` or `main`. Every change reaches them through a pull request that you merge. The workflows push
+  only tags and `release/*` branches, so leave `release/*` unprotected.
 
-The Gradle build must define two maven repositories named `Repsy` and `GitHubPackages`:
+Pull requests opened with `GITHUB_TOKEN` (the one to `develop` and the one to `main`) start no other workflows, so
+their required status checks don't run by themselves, and there is no run to re-run. To start the checks, close and
+reopen the pull request yourself: the `reopened` event comes from you, so the checks run. After that, a failed check
+can be re-run from the Checks tab.
+
+The Gradle build must define a maven repository named `Repsy`, for snapshots:
 
 ```kotlin
 publishing {
     repositories {
-        maven {
-            name = "GitHubPackages"
-            url = uri("https://maven.pkg.github.com/buijs-dev/<repository>")
-            credentials {
-                username = System.getenv("GITHUB_ACTOR")
-                password = System.getenv("GITHUB_TOKEN")
-            }
-        }
-        
         maven {
             name = "Repsy"
             url = uri("https://repo.repsy.io/mvn/buijs-dev/maven")
@@ -74,6 +73,11 @@ publishing {
     }
 }
 ```
+
+and apply the [vanniktech maven-publish plugin](https://vanniktech.github.io/gradle-maven-publish-plugin/) for
+releases, whose `publishToMavenCentral` task signs and uploads to Maven Central. Central requires a `-sources.jar`
+and a `-javadoc.jar`; the plugin builds the latter with Dokka, so Dokka stays in the build. The `buijs.publishing`
+plugin of [gradle-conventions](https://github.com/buijs-dev/gradle-conventions) does both.
 
 All snapshots go to one public Repsy repository (`https://repo.repsy.io/mvn/buijs-dev/maven`,
 web UI: https://repsy.io/buijs-dev/maven). Reading needs no credentials, so a repository that depends
@@ -110,39 +114,6 @@ jobs:
       root-dir: ${{ vars.ROOT_DIR || '.' }}
     secrets: inherit
 ```
-
-### Dokka
-
-A reusable workflow cannot grant itself more permissions than the caller has, so the caller declares them.
-
-```yaml
-name: Dokka
-
-on:
-  push:
-    branches: [ main ]
-  workflow_dispatch:
-
-permissions:
-  contents: read
-  packages: read
-  pages: write
-  id-token: write
-
-concurrency:
-  group: pages
-  cancel-in-progress: false
-
-jobs:
-  dokka:
-    uses: buijs-dev/ci-templates/.github/workflows/dokka.yml@main
-    with:
-      root-dir: ${{ vars.ROOT_DIR || '.' }}
-```
-
-The documentation gets the version of the latest `v*` tag reachable from the built commit (without the `v`),
-regardless of the `-SNAPSHOT` version in `gradle.properties`. Without any release tag, the version from
-`gradle.properties` is used.
 
 ### Astro Pages
 
@@ -260,6 +231,9 @@ name: Prepare Release
 on:
   push:
     tags: [ 'v*' ]
+  pull_request:
+    types: [ closed ]
+    branches: [ develop ]
 
 permissions:
   contents: write
@@ -268,7 +242,14 @@ permissions:
 jobs:
   prepare:
     uses: buijs-dev/ci-templates/.github/workflows/prepare-release.yml@main
+    with:
+      root-dir: ${{ vars.ROOT_DIR || '.' }}
 ```
+
+The tag starts the job that opens the pull request from `release/<version>` to `develop`. A merged pull request into
+`develop` from a `release/*` branch starts the job that opens the release pull request to `main`; any other closed
+pull request runs nothing. The input `next-version` (`minor`, the default; `patch`, `major` or `none`) sets which
+next `-SNAPSHOT` goes into `gradle.properties`.
 
 ```yaml
 name: Publish Release
@@ -280,27 +261,36 @@ on:
 
 permissions:
   contents: write
-  packages: write
 
 jobs:
   publish:
     uses: buijs-dev/ci-templates/.github/workflows/publish-release.yml@main
     with:
       root-dir: ${{ vars.ROOT_DIR || '.' }}
+    secrets: inherit
 ```
+
+### Upgrading
+
+- `publish-release.yml`: remove `target:` (an unknown input fails the workflow), pass `secrets: inherit`, and drop
+  `packages: write` from `permissions`. It always publishes to Maven Central.
+- `prepare-release.yml`: add `pull_request: types: [ closed ], branches: [ develop ]` to `on:`, and pass
+  `root-dir` when `gradle.properties` is not in the repository root. Without the new trigger the release stops after
+  the pull request to `develop` is merged.
+- `dokka.yml` is gone: delete a caller of it. Dokka itself stays in the build, for the `-javadoc.jar`.
 
 ## Publishing
 
 Branch strategy:
 
 ```
-feature/* ──PR──▶ develop ──tag vX.Y.Z──▶ changelog commit on develop ──PR──▶ main ──merge──▶ GitHub Packages
-                     │                                                                         + GitHub Release
+feature/* ──PR──▶ develop ──tag vX.Y.Z──▶ release/X.Y.Z ──PR──▶ develop ──PR──▶ main ──merge──▶ Maven Central
+                     │                  (changelog, next SNAPSHOT)                              + GitHub Release
                      └─ every push: X.Y.Z-SNAPSHOT ─▶ Repsy
 ```
 
-`develop` is never merged back from `main`: the changelog commit is made on `develop` itself, so both branches
-share it and the history of `develop` stays linear.
+`develop` is never merged back from `main`: the changelog commit reaches `main` through `develop`, so both
+branches share it.
 
 ### Snapshots
 
@@ -318,59 +308,43 @@ That version must end with `-SNAPSHOT`, otherwise the workflow fails.
    git push origin v1.2.0
    ```
 3. The prepare workflow then:
-   - checks the tag: `v*`, not a SNAPSHOT, on `develop`, and not released yet; nothing is pushed when a check fails;
-   - renames `## [Unreleased]` to `## [1.2.0] - <date>` (UTC) below a new, empty `## [Unreleased]`, and moves an
-     `[Unreleased]: .../compare/v1.1.0...HEAD` link, if present, to the new tag. A missing `CHANGELOG.md`, a missing
-     or empty `## [Unreleased]` section, or an existing `## [1.2.0]` section fails the workflow;
-   - commits that change to `develop` (on top of `develop`, which may be past the tag) and moves the tag to it;
-   - opens the pull request `release: v1.2.0` from `develop` to `main` with the release notes, or updates the open
-     pull request from `develop` to `main` if there is one.
-4. Fetch the moved tag and the changelog commit: `git pull && git fetch --tags --force`.
-5. Review the pull request and merge it **with a merge commit** (no squash or rebase, so `main` keeps the commits of
-   `develop`). Commits pushed to `develop` while the pull request is open are part of the release.
-   Pull requests opened with `GITHUB_TOKEN` don't trigger other workflows, so required status checks on `main` don't
-   run for it; push a commit to `develop` or re-run the checks by hand when `main` requires them.
-6. The publish workflow then:
+   - checks the tag: `v*`, `X.Y.Z` or `X.Y.Z-<pre-release>`, not a SNAPSHOT, on `develop`, and not released yet;
+     nothing is pushed when a check fails;
+   - creates the branch `release/1.2.0` from the tag;
+   - on it, renames `## [Unreleased]` to `## [1.2.0] - <date>` (UTC) below a new, empty `## [Unreleased]`, and moves
+     an `[Unreleased]: .../compare/v1.1.0...HEAD` link, if present, to the new tag. A missing `CHANGELOG.md`, a
+     missing or empty `## [Unreleased]` section, or an existing `## [1.2.0]` section fails the workflow;
+   - sets `version` in `<root-dir>/gradle.properties` to the next snapshot, `1.3.0-SNAPSHOT` (`next-version`; a
+     pre-release such as `1.0.0-rc.1` is followed by `1.0.0-SNAPSHOT`);
+   - commits both, pushes `release/1.2.0`, and moves the tag to that commit;
+   - opens the pull request `chore: release v1.2.0` from `release/1.2.0` to `develop`.
+4. Review that pull request and merge it **with a merge commit** (no squash or rebase): the tag is on its commit,
+   and the release needs it on `develop`.
+5. The prepare workflow then checks that the tag is on `develop`, opens the pull request `release: v1.2.0` from
+   `develop` to `main` with the release notes (or updates the open one), and deletes `release/1.2.0`.
+6. Review the pull request and merge it **with a merge commit** (no squash or rebase, so `main` keeps the commits of
+   `develop`). Commits merged into `develop` while the pull request is open are part of the release.
+7. The publish workflow then:
    - finds the latest `v*` tag on the merged `develop` commit without a GitHub Release; a merge from `develop`
      without one publishes nothing, so `develop` can also be merged into `main` without a release;
-   - publishes version `1.2.0` (the tag without `v`) to GitHub Packages with `-Pversion=1.2.0`,
+   - publishes version `1.2.0` (the tag without `v`) to Maven Central, signed, with `-Pversion=1.2.0`,
      regardless of the version in `gradle.properties`;
    - moves the tag to the merge commit on `main`, so it marks exactly the published code;
    - creates a GitHub Release with the `## [1.2.0]` section of the changelog as release notes.
-7. Bump `version` in `gradle.properties` on `develop` to the next snapshot, e.g. `1.3.0-SNAPSHOT`.
+8. Update your clone: `git pull && git fetch --tags --force`.
 
-The tag moves twice (to the changelog commit, then to the merge commit on `main`) and only before the release
+The tag moves twice (to the commit on `release/1.2.0`, then to the merge commit on `main`) and only before the release
 exists. Run `git fetch --tags --force` to get its final place.
 
-A published version cannot be overwritten in GitHub Packages. To redo a failed release, fix the problem
-and release a new version, or delete the package version in GitHub before re-running the workflow.
+A release on Maven Central can never be removed or replaced: a failed release is always a new version.
 
 ### Consuming releases
 
-Reading from GitHub Packages requires authentication, also for public packages. 
-Add this repository to `pluginManagement` and build.gradle(.kts) `repositories`:
+Releases are on Maven Central; no authentication is needed. `mavenCentral()` in `pluginManagement` and
+build.gradle(.kts) `repositories` is enough.
 
-```kotlin
-maven("https://maven.pkg.github.com/buijs-dev/*") {
-    credentials {
-        username = providers.gradleProperty("gpr.user").orElse(providers.environmentVariable("GITHUB_ACTOR")).orNull
-        password = providers.gradleProperty("gpr.key").orElse(providers.environmentVariable("GITHUB_TOKEN")).orNull
-    }
-    mavenContent {
-        releasesOnly()
-        includeGroupByRegex("dev\\.buijs.*")
-    }
-}
-```
-
-- **CI**: the templates pass `GITHUB_TOKEN` to Gradle and request `packages: read`; `GITHUB_ACTOR` is set by the
-  runner. A caller that declares its own `permissions` (like Dokka) must include `packages: read`.
-- **Locally**: create a classic personal access token with the `read:packages` scope and add it to
-  `~/.gradle/gradle.properties` (never to the repository):
-  ```properties
-  gpr.user=<github username>
-  gpr.key=<token>
-  ```
+`coverage.yml`, `publish-snapshot.yml` and `astro-pages.yml` still request `packages: read` and pass `GITHUB_TOKEN`
+to the build, for builds that still resolve older releases from GitHub Packages. They go once no caller needs them.
 
 ## Documentation
 
