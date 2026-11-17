@@ -1,14 +1,26 @@
 name: Prepare Release
 
-# Prepares a release from a v* tag on the develop branch. The version is taken from the tag: v1.2.3
-# releases 1.2.3. The [Unreleased] section of the changelog is moved to [1.2.3]; <date> in a commit on
-# develop, the tag is moved to that commit, and a pull request from develop to main is opened (or
-# updated). Merging that pull request publishes the release (publish-release.yml).
+# Prepares a release in two steps, both through pull requests; no branch is pushed to directly.
+#
+# 1. On a v* tag on develop (push of a tag): the version is taken from the tag (v1.2.3 releases 1.2.3).
+#    The branch release/1.2.3 is created from the tag. On it, the [Unreleased] section of the changelog
+#    moves to [1.2.3] - <date>, and version in gradle.properties moves to the next -SNAPSHOT. The tag is
+#    moved to that commit, and a pull request from release/1.2.3 to develop is opened (or updated).
+# 2. When that pull request is merged (pull_request closed on develop, head release/*): a pull request
+#    from develop to main is opened (or updated), and release/1.2.3 is deleted. Merging that pull request
+#    publishes the release (publish-release.yml).
+#
+# Callers trigger on both events; each job runs only for its own event.
 on:
   workflow_call:
     inputs:
+      root-dir:
+        description: Directory containing gradle.properties, relative to the repository root.
+        type: string
+        required: false
+        default: .
       develop-branch:
-        description: Branch the tag must be on; it gets the changelog commit.
+        description: Branch the tag must be on; the release branch is merged into it.
         type: string
         required: false
         default: develop
@@ -22,18 +34,28 @@ on:
         type: string
         required: false
         default: CHANGELOG.md
+      next-version:
+        description: >
+          Which part of the released version the next -SNAPSHOT in gradle.properties raises: minor
+          (1.2.0 -> 1.3.0-SNAPSHOT), patch, major, or none (gradle.properties is left as it is). A
+          pre-release (1.0.0-rc.1) is always followed by its own version (1.0.0-SNAPSHOT).
+        type: string
+        required: false
+        default: minor
 
 jobs:
-  prepare:
+  release-branch:
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
       contents: write
       pull-requests: write
     env:
       GH_TOKEN: ${{ github.token }}
+      ROOT_DIR: ${{ inputs.root-dir }}
       DEVELOP_BRANCH: ${{ inputs.develop-branch }}
-      MAIN_BRANCH: ${{ inputs.main-branch }}
       CHANGELOG: ${{ inputs.changelog }}
+      NEXT_VERSION: ${{ inputs.next-version }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -53,6 +75,14 @@ jobs:
             echo "::error::Release version must not be a SNAPSHOT ($version)"
             exit 1
           fi
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+            echo "::error::Release version must be X.Y.Z or X.Y.Z-<pre-release> (got $version)"
+            exit 1
+          fi
+          case "$NEXT_VERSION" in
+            minor|patch|major|none) ;;
+            *) echo "::error::Unknown next-version '$NEXT_VERSION': use minor, patch, major or none"; exit 1 ;;
+          esac
           if ! git merge-base --is-ancestor "$GITHUB_SHA" "origin/$DEVELOP_BRANCH"; then
             echo "::error::Tag $GITHUB_REF_NAME is not on $DEVELOP_BRANCH"
             exit 1
@@ -61,11 +91,15 @@ jobs:
             echo "::error::$GITHUB_REF_NAME is already released"
             exit 1
           fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
+          {
+            echo "version=$version"
+            echo "branch=release/$version"
+          } >> "$GITHUB_OUTPUT"
 
-      # The changelog commit goes on top of develop, which may already be past the tag.
-      - name: Switch to ${{ inputs.develop-branch }}
-        run: git switch -C "$DEVELOP_BRANCH" "origin/$DEVELOP_BRANCH"
+      - name: Create release branch
+        env:
+          BRANCH: ${{ steps.tag.outputs.branch }}
+        run: git switch -C "$BRANCH" "$GITHUB_SHA"
 
       - name: Prepare changelog
         id: changelog
@@ -76,26 +110,138 @@ jobs:
           tag: ${{ github.ref_name }}
           changelog: ${{ inputs.changelog }}
 
-      # Pushes with GITHUB_TOKEN start no other workflows: no snapshot for the changelog commit, and the
-      # moved tag does not start this workflow again.
-      - name: Commit changelog and move tag
+      - name: Set next snapshot version
+        id: next
+        if: inputs.next-version != 'none'
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          properties="$ROOT_DIR/gradle.properties"
+          if ! grep -q '^version=' "$properties" 2>/dev/null; then
+            echo "::warning::No version= line in $properties; the version is left as it is"
+            exit 0
+          fi
+          core=${VERSION%%-*}
+          IFS=. read -r major minor patch <<< "$core"
+          if [[ "$VERSION" != "$core" ]]; then
+            next="$core"
+          else
+            case "$NEXT_VERSION" in
+              major) next="$((major + 1)).0.0" ;;
+              minor) next="$major.$((minor + 1)).0" ;;
+              patch) next="$major.$minor.$((patch + 1))" ;;
+            esac
+          fi
+          sed -i "s/^version=.*/version=$next-SNAPSHOT/" "$properties"
+          git add "$properties"
+          echo "snapshot=$next-SNAPSHOT" >> "$GITHUB_OUTPUT"
+
+      # Pushes with GITHUB_TOKEN start no other workflows: the moved tag does not start this workflow
+      # again, and the release branch starts no checks.
+      - name: Commit, move tag and push release branch
+        env:
+          BRANCH: ${{ steps.tag.outputs.branch }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898898+github-actions[bot]@users.noreply.github.com"
           git add "$CHANGELOG"
-          git commit -m "chore: changelog for $GITHUB_REF_NAME"
-          git push origin "$DEVELOP_BRANCH"
+          git commit -m "chore: release $GITHUB_REF_NAME"
+          git push -f origin "$BRANCH"
           git tag -f "$GITHUB_REF_NAME"
           git push -f origin "refs/tags/$GITHUB_REF_NAME"
 
-      - name: Open release pull request
+      - name: Open pull request to ${{ inputs.develop-branch }}
         env:
+          BRANCH: ${{ steps.tag.outputs.branch }}
           NOTES_FILE: ${{ steps.changelog.outputs.notes-file }}
+          SNAPSHOT: ${{ steps.next.outputs.snapshot }}
         run: |
-          title="release: $GITHUB_REF_NAME"
+          title="chore: release $GITHUB_REF_NAME"
+          contents="the changelog section of the release"
+          if [ -n "$SNAPSHOT" ]; then
+            contents="$contents and version $SNAPSHOT in gradle.properties"
+          fi
           body="$RUNNER_TEMP/pr-body.md"
           {
-            echo "Releases **$GITHUB_REF_NAME**. Merging this pull request publishes it; merge with a merge commit (no squash or rebase)."
+            echo "Prepares **$GITHUB_REF_NAME**: $contents."
+            echo "Merge it **with a merge commit** (no squash or rebase): the tag $GITHUB_REF_NAME is on its commit."
+            echo "Merging it opens the release pull request from $DEVELOP_BRANCH to main."
+            echo
+            echo "## Release notes"
+            echo
+            cat "$NOTES_FILE"
+          } > "$body"
+          number=$(gh pr list --base "$DEVELOP_BRANCH" --head "$BRANCH" --state open --json number --jq '.[0].number // empty')
+          if [ -n "$number" ]; then
+            gh pr edit "$number" --title "$title" --body-file "$body"
+            echo "Updated pull request #$number"
+          else
+            gh pr create --base "$DEVELOP_BRANCH" --head "$BRANCH" --title "$title" --body-file "$body"
+          fi
+
+  release-pull-request:
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.merged &&
+      github.event.pull_request.base.ref == inputs.develop-branch &&
+      startsWith(github.event.pull_request.head.ref, 'release/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      DEVELOP_BRANCH: ${{ inputs.develop-branch }}
+      MAIN_BRANCH: ${{ inputs.main-branch }}
+      HEAD_REF: ${{ github.event.pull_request.head.ref }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          fetch-depth: 0
+
+      - name: Verify release
+        id: release
+        env:
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+        run: |
+          version=${HEAD_REF#release/}
+          tag="v$version"
+          if ! git rev-parse -q --verify "refs/tags/$tag" > /dev/null; then
+            echo "::error::Tag $tag of $HEAD_REF does not exist"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$tag" "$MERGE_SHA"; then
+            echo "::error::Tag $tag is not on $DEVELOP_BRANCH: $HEAD_REF was not merged with a merge commit. Delete the tag and tag $DEVELOP_BRANCH again."
+            exit 1
+          fi
+          if gh release view "$tag" > /dev/null 2>&1; then
+            echo "::error::$tag is already released"
+            exit 1
+          fi
+          {
+            echo "version=$version"
+            echo "tag=$tag"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Read release notes
+        id: changelog
+        uses: buijs-dev/ci-templates/.github/actions/release-changelog@main
+        with:
+          mode: notes
+          version: ${{ steps.release.outputs.version }}
+          changelog: ${{ inputs.changelog }}
+
+      - name: Open release pull request
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+          NOTES_FILE: ${{ steps.changelog.outputs.notes-file }}
+        run: |
+          title="release: $TAG"
+          body="$RUNNER_TEMP/pr-body.md"
+          {
+            echo "Releases **$TAG**. Merging this pull request publishes it to Maven Central; merge with a merge commit (no squash or rebase)."
             echo
             echo "## Release notes"
             echo
@@ -108,3 +254,6 @@ jobs:
           else
             gh pr create --base "$MAIN_BRANCH" --head "$DEVELOP_BRANCH" --title "$title" --body-file "$body"
           fi
+
+      - name: Delete release branch
+        run: git push origin --delete "$HEAD_REF" || echo "::notice::$HEAD_REF is already deleted"
