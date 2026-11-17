@@ -8,7 +8,7 @@ name: Publish Release
 # release goes (secrets: inherit):
 # - maven-central (default): publishToMavenCentral of the vanniktech maven-publish plugin, signed, with
 #   the secrets MAVEN_CENTRAL_USERNAME, MAVEN_CENTRAL_PASSWORD, SIGNING_KEY and SIGNING_PASSWORD;
-# - repsy: publishAllPublicationsToRepsyRepository, to https://repo.repsy.io/buijs-dev/maven2, with the
+# - repsy: publishAllPublicationsToRepsyRepository, to https://repo.repsy.io/mvn/buijs-dev/maven, with the
 #   secrets REPSY_USERNAME and REPSY_PASSWORD. No signing secrets are needed.
 on:
   workflow_call:

@@ -65,7 +65,7 @@ publishing {
     repositories {
         maven {
             name = "Repsy"
-            url = uri("https://repo.repsy.io/buijs-dev/maven2")
+            url = uri("https://repo.repsy.io/mvn/buijs-dev/maven")
             credentials {
                 username = System.getenv("REPSY_USERNAME")
                 password = System.getenv("REPSY_PASSWORD")
@@ -87,13 +87,13 @@ The two targets:
 - `maven-central` (the default): the public libraries. Every dependency of an artifact on Central must resolve from
   Central too, so it never depends at runtime on something that is only on Repsy.
 - `repsy`: the build tooling (Gradle plugins and the style rules), to the public Repsy repository
-  `https://repo.repsy.io/buijs-dev/maven2`. It is never released to Central.
+  `https://repo.repsy.io/mvn/buijs-dev/maven`. It is never released to Central.
 
 All snapshots of all repositories go to the same Repsy repository. Reading needs no credentials, so a repository
 that depends on a SNAPSHOT adds it to `pluginManagement` and build.gradle(.kts) repositories:
 
 ```kotlin
-maven("https://repo.repsy.io/buijs-dev/maven2") {
+maven("https://repo.repsy.io/mvn/buijs-dev/maven") {
     mavenContent {
         snapshotsOnly()
         includeGroupByRegex("dev\\.buijs.*")
@@ -295,8 +295,6 @@ A `target` other than `maven-central` or `repsy` fails the workflow.
 - `publish-release.yml`: pass `secrets: inherit` and drop `packages: write` from `permissions`. A public library
   keeps the default `target` (`maven-central`); build tooling sets `target: repsy`. The GitHub Packages target is
   gone.
-- Repsy: replace `https://repo.repsy.io/mvn/buijs-dev/maven` with `https://repo.repsy.io/buijs-dev/maven2` in the
-  `Repsy` publishing repository, `pluginManagement` and build.gradle(.kts) repositories.
 - `prepare-release.yml`: add `pull_request: types: [ closed ], branches: [ develop ]` to `on:`, and pass
   `root-dir` when `gradle.properties` is not in the repository root. Without the new trigger the release stops after
   the pull request to `develop` is merged.
@@ -368,7 +366,7 @@ No authentication is needed. Libraries are on Maven Central: `mavenCentral()` in
 `repositories` for a dependency such as a rule set):
 
 ```kotlin
-maven("https://repo.repsy.io/buijs-dev/maven2") {
+maven("https://repo.repsy.io/mvn/buijs-dev/maven") {
     mavenContent { includeGroupByRegex("dev\\.buijs.*") }
 }
 ```
